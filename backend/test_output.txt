@@ -1,0 +1,74 @@
+Creating test database for alias 'default'...
+F..............F...FFFF......F...........
+======================================================================
+FAIL: test_audit_log_detail (core.tests.AuditLogApiTests.test_audit_log_detail)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "C:\Users\lolo\Desktop\archive-demo\backend\core\tests.py", line 379, in test_audit_log_detail
+    self.assertEqual(response.status_code, status.HTTP_200_OK)
+    ~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+AssertionError: 403 != 200
+
+======================================================================
+FAIL: test_invalid_transition_approved_cannot_be_submitted (core.tests.DocumentWorkflowApiTests.test_invalid_transition_approved_cannot_be_submitted)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "C:\Users\lolo\Desktop\archive-demo\backend\core\tests.py", line 243, in test_invalid_transition_approved_cannot_be_submitted
+    self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+    ~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+AssertionError: 404 != 400
+
+======================================================================
+FAIL: test_resubmit_rejected_document_returns_to_pending (core.tests.DocumentWorkflowApiTests.test_resubmit_rejected_document_returns_to_pending)
+Rejected document can be resubmitted by data_entry; it returns to pending.
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "C:\Users\lolo\Desktop\archive-demo\backend\core\tests.py", line 268, in test_resubmit_rejected_document_returns_to_pending
+    self.assertEqual(response.status_code, status.HTTP_200_OK)
+    ~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+AssertionError: 404 != 200
+
+======================================================================
+FAIL: test_soft_delete_marks_without_physical_removal (core.tests.DocumentWorkflowApiTests.test_soft_delete_marks_without_physical_removal)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "C:\Users\lolo\Desktop\archive-demo\backend\core\tests.py", line 248, in test_soft_delete_marks_without_physical_removal
+    self.assertEqual(response.status_code, status.HTTP_200_OK)
+    ~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+AssertionError: 404 != 200
+
+======================================================================
+FAIL: test_submit_pending_document_still_blocked (core.tests.DocumentWorkflowApiTests.test_submit_pending_document_still_blocked)
+A pending document cannot be submitted again — existing guard must remain intact.
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "C:\Users\lolo\Desktop\archive-demo\backend\core\tests.py", line 282, in test_submit_pending_document_still_blocked
+    self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+    ~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+AssertionError: 404 != 400
+
+======================================================================
+FAIL: test_submit_transition_success_for_data_entry (core.tests.DocumentWorkflowApiTests.test_submit_transition_success_for_data_entry)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "C:\Users\lolo\Desktop\archive-demo\backend\core\tests.py", line 199, in test_submit_transition_success_for_data_entry
+    self.assertEqual(response.status_code, status.HTTP_200_OK)
+    ~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+AssertionError: 404 != 200
+
+======================================================================
+FAIL: test_data_entry_sees_all_non_deleted (core.tests.DossierDetailDocumentVisibilityTests.test_data_entry_sees_all_non_deleted)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "C:\Users\lolo\Desktop\archive-demo\backend\core\tests.py", line 902, in test_data_entry_sees_all_non_deleted
+    self.assertEqual(response.status_code, status.HTTP_200_OK)
+    ~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+AssertionError: 404 != 200
+
+----------------------------------------------------------------------
+Ran 41 tests in 93.759s
+
+FAILED (failures=7)
+Destroying test database for alias 'default'...
+Found 41 test(s).
+System check identified no issues (0 silenced).
