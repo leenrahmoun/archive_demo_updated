@@ -1,7 +1,9 @@
 import tempfile
 from datetime import timedelta
 from pathlib import Path
+import shutil
 from unittest.mock import patch
+from uuid import uuid4
 
 from django.conf import settings
 from django.core.exceptions import ValidationError
@@ -18,14 +20,17 @@ from core.models import AuditAction, AuditLog, Document, DocumentStatus, Documen
 
 class TemporaryMediaRootMixin:
     def setUp(self):
-        self._temp_media_root = tempfile.TemporaryDirectory()
-        self._media_override = override_settings(MEDIA_ROOT=self._temp_media_root.name)
+        uploads_root = Path(__file__).resolve().parents[1] / "uploads"
+        uploads_root.mkdir(parents=True, exist_ok=True)
+        self._temp_media_root = uploads_root / f"test-media-{uuid4().hex}"
+        self._temp_media_root.mkdir(parents=True, exist_ok=True)
+        self._media_override = override_settings(MEDIA_ROOT=str(self._temp_media_root))
         self._media_override.enable()
         super().setUp()
 
     def tearDown(self):
         self._media_override.disable()
-        self._temp_media_root.cleanup()
+        shutil.rmtree(self._temp_media_root, ignore_errors=True)
         super().tearDown()
 
     def make_uploaded_pdf(self, name="document.pdf", size_kb=120, content_type="application/pdf"):

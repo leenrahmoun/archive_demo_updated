@@ -388,36 +388,6 @@ class DossierCreateSerializer(serializers.Serializer):
     shelf_number = serializers.CharField(max_length=20)
     first_document = FirstDocumentInputSerializer(required=True)
 
-    def to_internal_value(self, data):
-        request_files = getattr(self.context.get("request"), "FILES", None)
-        keys = list(data.keys()) if hasattr(data, "keys") else []
-        if request_files is not None:
-            for key in request_files.keys():
-                if key not in keys:
-                    keys.append(key)
-
-        if any(str(key).startswith("first_document.") for key in keys):
-            normalized_data = {}
-            first_document_data = {}
-
-            for key in keys:
-                if request_files is not None and key in request_files:
-                    value = request_files.get(key)
-                else:
-                    value = data.get(key)
-                if str(key).startswith("first_document."):
-                    first_document_key = str(key).split(".", 1)[1]
-                    first_document_data[first_document_key] = value
-                else:
-                    normalized_data[key] = value
-
-            if first_document_data:
-                normalized_data["first_document"] = first_document_data
-
-            data = normalized_data
-
-        return super().to_internal_value(data)
-
     def validate(self, attrs):
         if not attrs.get("first_document"):
             raise serializers.ValidationError({"first_document": "First document is required; empty dossier creation is not allowed."})
