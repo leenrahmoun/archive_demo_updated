@@ -3,6 +3,7 @@ from django.urls import path
 from core.views import (
     AuditLogListAPIView,
     AuditLogRetrieveAPIView,
+    AuditorReviewQueueAPIView,
     DocumentApproveAPIView,
     DocumentListAPIView,
     DocumentRejectAPIView,
@@ -15,11 +16,15 @@ from core.views import (
     GovernorateListAPIView,
     LogoutAPIView,
     MeAPIView,
+    UserManagementListCreateAPIView,
+    UserManagementRetrieveUpdateDestroyAPIView,
 )
 
 urlpatterns = [
     path("auth/me/", MeAPIView.as_view(), name="auth-me"),
     path("auth/logout/", LogoutAPIView.as_view(), name="auth-logout"),
+    path("users/", UserManagementListCreateAPIView.as_view(), name="user-list-create"),
+    path("users/<int:pk>/", UserManagementRetrieveUpdateDestroyAPIView.as_view(), name="user-detail"),
     path("audit-logs/", AuditLogListAPIView.as_view(), name="audit-log-list"),
     path("audit-logs/<int:pk>/", AuditLogRetrieveAPIView.as_view(), name="audit-log-detail"),
     path("dossiers/", DossierListCreateAPIView.as_view(), name="dossier-list-create"),
@@ -30,6 +35,7 @@ urlpatterns = [
     path("documents/<int:pk>/approve/", DocumentApproveAPIView.as_view(), name="document-approve"),
     path("documents/<int:pk>/reject/", DocumentRejectAPIView.as_view(), name="document-reject"),
     path("documents/<int:pk>/soft-delete/", DocumentSoftDeleteAPIView.as_view(), name="document-soft-delete"),
+    path("auditor/review-queue/", AuditorReviewQueueAPIView.as_view(), name="auditor-review-queue"),
     path("governorates/", GovernorateListAPIView.as_view(), name="governorate-list"),
     path("document-types/", DocumentTypeListAPIView.as_view(), name="document-type-list"),
 ]

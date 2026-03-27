@@ -3,11 +3,15 @@ import { useAuth } from "../auth/useAuth";
 
 const CREATE_ROLES = new Set(["admin", "data_entry"]);
 const AUDIT_ROLES = new Set(["admin"]);
+const ADMIN_ROLES = new Set(["admin"]);
+const REVIEW_QUEUE_ROLES = new Set(["auditor", "admin"]);
 
 export function AppLayout() {
   const { user, logout } = useAuth();
   const canCreate = CREATE_ROLES.has(user?.role);
   const canViewAudit = AUDIT_ROLES.has(user?.role);
+  const canManageUsers = ADMIN_ROLES.has(user?.role);
+  const canViewReviewQueue = REVIEW_QUEUE_ROLES.has(user?.role);
 
   return (
     <div className="app-shell">
@@ -16,7 +20,9 @@ export function AppLayout() {
         <nav>
           <NavLink to="/dossiers">الأضابير</NavLink>
           <NavLink to="/documents">الوثائق</NavLink>
+          {canViewReviewQueue ? <NavLink to="/review-queue">قائمة المراجعة</NavLink> : null}
           {canViewAudit ? <NavLink to="/audit-logs">سجل التدقيق</NavLink> : null}
+          {canManageUsers ? <NavLink to="/admin/users">إدارة المستخدمين</NavLink> : null}
           {canCreate ? <NavLink to="/dossiers/new">إنشاء إضبارة</NavLink> : null}
         </nav>
       </aside>
@@ -30,7 +36,9 @@ export function AppLayout() {
           <div className="topbar-actions">
             <Link to="/dossiers">الرئيسية</Link>
             <Link to="/documents">الوثائق</Link>
+            {canViewReviewQueue ? <Link to="/review-queue">قائمة المراجعة</Link> : null}
             {canViewAudit ? <Link to="/audit-logs">سجل التدقيق</Link> : null}
+            {canManageUsers ? <Link to="/admin/users">إدارة المستخدمين</Link> : null}
             {canCreate ? <Link to="/dossiers/new">إنشاء إضبارة</Link> : null}
             <button type="button" className="btn-danger" onClick={logout}>
               تسجيل الخروج

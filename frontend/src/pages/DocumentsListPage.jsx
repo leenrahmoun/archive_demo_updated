@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from "react";
 import { Link } from "react-router-dom";
 import { getDocuments } from "../api/documentsApi";
 import { getDocumentTypes } from "../api/lookupsApi";
+import { useAuth } from "../auth/useAuth";
 import { AlertMessage } from "../components/AlertMessage";
 import { EmptyBlock, LoadingBlock } from "../components/StateBlock";
 import { FilterSection } from "../components/FilterSection";
@@ -12,6 +13,9 @@ import { StatusBadge } from "../components/StatusBadge";
 const DEFAULT_PAGE_SIZE = 20;
 
 export function DocumentsListPage() {
+  const { user } = useAuth();
+  const isAuditor = user?.role === "auditor";
+
   const [documentTypes, setDocumentTypes] = useState([]);
   const [filters, setFilters] = useState({
     search: "",
@@ -20,7 +24,6 @@ export function DocumentsListPage() {
     dossier: "",
     created_by: "",
     reviewed_by: "",
-    is_deleted: "",
     ordering: "",
     page_size: DEFAULT_PAGE_SIZE,
   });
@@ -73,7 +76,7 @@ export function DocumentsListPage() {
         />
         <select value={filters.status} onChange={(e) => onFilterChange("status", e.target.value)}>
           <option value="">كل الحالات</option>
-          <option value="draft">draft</option>
+          {!isAuditor && <option value="draft">draft</option>}
           <option value="pending">pending</option>
           <option value="approved">approved</option>
           <option value="rejected">rejected</option>
@@ -87,25 +90,20 @@ export function DocumentsListPage() {
           ))}
         </select>
         <input
-          placeholder="رقم الإضبارة (id)"
+          placeholder="رقم الإضبارة"
           value={filters.dossier}
           onChange={(e) => onFilterChange("dossier", e.target.value)}
         />
         <input
-          placeholder="أنشأها المستخدم (id)"
+          placeholder="أنشأها المستخدم (اسم أو id)"
           value={filters.created_by}
           onChange={(e) => onFilterChange("created_by", e.target.value)}
         />
         <input
-          placeholder="راجعها المستخدم (id أو null)"
+          placeholder="راجعها المستخدم (اسم أو id)"
           value={filters.reviewed_by}
           onChange={(e) => onFilterChange("reviewed_by", e.target.value)}
         />
-        <select value={filters.is_deleted} onChange={(e) => onFilterChange("is_deleted", e.target.value)}>
-          <option value="">افتراضي (غير محذوفة)</option>
-          <option value="false">غير محذوفة</option>
-          <option value="true">محذوفة منطقيا</option>
-        </select>
         <select value={filters.ordering} onChange={(e) => onFilterChange("ordering", e.target.value)}>
           <option value="">الترتيب الافتراضي (الأحدث)</option>
           <option value="status">status تصاعدي</option>
@@ -135,6 +133,7 @@ export function DocumentsListPage() {
                 <th>الحالة</th>
                 <th>الإضبارة</th>
                 <th>نوع الوثيقة</th>
+                <th>ملاحظات</th>
                 <th>تفاصيل</th>
               </tr>
             </thead>
@@ -146,8 +145,16 @@ export function DocumentsListPage() {
                   <td>
                     <StatusBadge status={doc.status} />
                   </td>
-                  <td>{doc.dossier}</td>
-                  <td>{doc.doc_type}</td>
+                  <td>{doc.dossier_name || doc.dossier}</td>
+                  <td>{doc.doc_type_name || doc.doc_type}</td>
+                  <td>
+                    {doc.is_approved_by_admin ? (
+                      <span style={{ color: "#d97706", fontWeight: "bold" }}>معتمد من الإدارة</span>
+                    ) : null}
+                    {doc.is_rejected_by_admin ? (
+                      <span style={{ color: "#be123c", fontWeight: "bold" }}>مرفوض من الإدارة</span>
+                    ) : null}
+                  </td>
                   <td>
                     <Link to={`/documents/${doc.id}`}>عرض</Link>
                   </td>

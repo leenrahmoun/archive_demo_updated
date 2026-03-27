@@ -53,15 +53,23 @@ export function DocumentDetailPage() {
           <strong>الحالة:</strong> {document.status}
           {"  "}
           <StatusBadge status={document.status} />
+          {document.is_approved_by_admin ? (
+            <span style={{ color: "#d97706", fontWeight: "bold", marginRight: "8px" }}>
+              (معتمد من الإدارة)
+            </span>
+          ) : null}
         </p>
         <p>
-          <strong>رقم الإضبارة:</strong> <Link to={`/dossiers/${document.dossier}`}>{document.dossier}</Link>
+          <strong>رقم الإضبارة:</strong>{" "}
+          <Link to={`/dossiers/${document.dossier}`}>
+            {document.dossier_name || document.dossier}
+          </Link>
         </p>
         <p>
-          <strong>نوع الوثيقة:</strong> {document.doc_type}
+          <strong>نوع الوثيقة:</strong> {document.doc_type_name || document.doc_type}
         </p>
         <p>
-          <strong>أنشأها:</strong> {document.created_by}
+          <strong>أنشأها:</strong> {document.created_by_name || document.created_by}
         </p>
         <p>
           <strong>تاريخ الإنشاء:</strong> {formatDate(document.created_at)}
@@ -70,7 +78,7 @@ export function DocumentDetailPage() {
           <strong>آخر تعديل:</strong> {formatDate(document.updated_at)}
         </p>
         <p>
-          <strong>المراجع:</strong> {document.reviewed_by ?? "-"}
+          <strong>المراجع:</strong> {document.reviewed_by_name || document.reviewed_by || "—" }
         </p>
         <p>
           <strong>تاريخ المراجعة:</strong> {formatDate(document.reviewed_at)}

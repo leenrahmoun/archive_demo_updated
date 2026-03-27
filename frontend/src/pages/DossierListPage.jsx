@@ -125,7 +125,7 @@ export function DossierListPage() {
                   <td>{dossier.file_number}</td>
                   <td>{dossier.full_name}</td>
                   <td>{dossier.national_id}</td>
-                  <td>{dossier.governorate || "-"}</td>
+                  <td>{dossier.governorate_name || dossier.governorate || "—"}</td>
                   <td>
                     <Link to={`/dossiers/${dossier.id}`}>عرض</Link>
                   </td>

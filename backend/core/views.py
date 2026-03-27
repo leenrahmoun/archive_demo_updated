@@ -1,12 +1,13 @@
 from rest_framework import filters, generics, status
+from rest_framework.parsers import FormParser, JSONParser, MultiPartParser
 from rest_framework.pagination import PageNumberPagination
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.views import APIView
 from django.utils import timezone
 
-from core.models import AuditLog, Document, DocumentType, Dossier, Governorate, UserRole
-from core.permissions import AuditLogPermission, DocumentPermission, DossierPermission, DocumentWorkflowPermission
+from core.models import AuditLog, Document, DocumentStatus, DocumentType, Dossier, Governorate, User, UserRole
+from core.permissions import AdminOnlyPermission, AuditLogPermission, DocumentPermission, DossierPermission, DocumentWorkflowPermission
 from core.serializers import (
     AuditLogSerializer,
     DocumentCreateSerializer,
@@ -20,6 +21,7 @@ from core.serializers import (
     GovernorateLookupSerializer,
     LogoutSerializer,
     MeSerializer,
+    UserManagementSerializer,
 )
 from core.services.document_workflow_service import (
     WorkflowError,
@@ -39,6 +41,7 @@ class StandardListPagination(PageNumberPagination):
 
 class DossierListCreateAPIView(generics.ListCreateAPIView):
     permission_classes = [DossierPermission]
+    parser_classes = [JSONParser, FormParser, MultiPartParser]
     queryset = Dossier.objects.all().order_by("-created_at", "-id")
     pagination_class = StandardListPagination
     filter_backends = [filters.SearchFilter, filters.OrderingFilter]
@@ -77,8 +80,32 @@ class DossierListCreateAPIView(generics.ListCreateAPIView):
             return DossierCreateSerializer
         return DossierListSerializer
 
+    def _get_create_payload(self, request):
+        content_type = request.content_type or ""
+        if not content_type.startswith("multipart/"):
+            return request.data
+
+        payload = {}
+        first_document = {}
+
+        for key in request.POST.keys():
+            value = request.POST.get(key)
+            if key.startswith("first_document."):
+                first_document[key.split(".", 1)[1]] = value
+            else:
+                payload[key] = value
+
+        uploaded_file = request.FILES.get("first_document.file")
+        if uploaded_file is not None:
+            first_document["file"] = uploaded_file
+
+        if first_document:
+            payload["first_document"] = first_document
+
+        return payload
+
     def create(self, request, *args, **kwargs):
-        serializer = self.get_serializer(data=request.data)
+        serializer = self.get_serializer(data=self._get_create_payload(request))
         serializer.is_valid(raise_exception=True)
         dossier = serializer.save()
         output = DossierDetailSerializer(dossier, context=self.get_serializer_context())
@@ -100,6 +127,7 @@ class DossierRetrieveAPIView(generics.RetrieveAPIView):
 
 class DocumentListAPIView(generics.ListCreateAPIView):
     permission_classes = [DocumentPermission]
+    parser_classes = [JSONParser, FormParser, MultiPartParser]
 
     def get_serializer_class(self):
         if self.request.method == "POST":
@@ -116,9 +144,18 @@ class DocumentListAPIView(generics.ListCreateAPIView):
         user = self.request.user
         queryset = Document.objects.filter(is_deleted=False).order_by("-created_at", "-id")
         if user.role == UserRole.READER:
-            queryset = queryset.filter(status="approved")
+            queryset = queryset.filter(status=DocumentStatus.APPROVED)
         elif user.role == UserRole.AUDITOR:
-            queryset = queryset.filter(status__in=["pending", "approved"])
+            # Auditor sees only documents from their assigned data_entry users
+            # Statuses: pending, rejected, approved (draft excluded)
+            queryset = queryset.filter(
+                created_by__assigned_auditor=user,
+                status__in=[
+                    DocumentStatus.PENDING,
+                    DocumentStatus.REJECTED,
+                    DocumentStatus.APPROVED,
+                ],
+            )
         elif user.role == UserRole.DATA_ENTRY:
             queryset = queryset.filter(created_by=user)
 
@@ -152,9 +189,17 @@ class DocumentListAPIView(generics.ListCreateAPIView):
             if lowered in {"true", "1"}:
                 queryset = Document.objects.filter(is_deleted=True).order_by("-created_at", "-id")
                 if user.role == UserRole.READER:
-                    queryset = queryset.filter(status="approved")
+                    queryset = queryset.filter(status=DocumentStatus.APPROVED)
                 elif user.role == UserRole.AUDITOR:
-                    queryset = queryset.filter(status__in=["pending", "approved"])
+                    # Auditor scoped visibility for deleted documents too
+                    queryset = queryset.filter(
+                        created_by__assigned_auditor=user,
+                        status__in=[
+                            DocumentStatus.PENDING,
+                            DocumentStatus.REJECTED,
+                            DocumentStatus.APPROVED,
+                        ],
+                    )
                 elif user.role == UserRole.DATA_ENTRY:
                     queryset = queryset.filter(created_by=user)
             elif lowered in {"false", "0"}:
@@ -343,3 +388,74 @@ class AuditLogRetrieveAPIView(generics.RetrieveAPIView):
     permission_classes = [IsAuthenticated, AuditLogPermission]
     serializer_class = AuditLogSerializer
     queryset = AuditLog.objects.select_related("user").all()
+
+
+class UserManagementListCreateAPIView(generics.ListCreateAPIView):
+    """Admin-only endpoint for listing and creating users."""
+    permission_classes = [IsAuthenticated, AdminOnlyPermission]
+    serializer_class = UserManagementSerializer
+    pagination_class = StandardListPagination
+    filter_backends = [filters.SearchFilter, filters.OrderingFilter]
+    search_fields = ["username", "first_name", "last_name", "email"]
+    ordering_fields = ["username", "role", "date_joined"]
+    ordering = ["-date_joined"]
+
+    def get_queryset(self):
+        queryset = User.objects.all().order_by("-date_joined", "-id")
+
+        role = self.request.query_params.get("role")
+        if role:
+            queryset = queryset.filter(role=role)
+
+        is_active = self.request.query_params.get("is_active")
+        if is_active is not None:
+            lowered = is_active.lower()
+            if lowered in {"true", "1"}:
+                queryset = queryset.filter(is_active=True)
+            elif lowered in {"false", "0"}:
+                queryset = queryset.filter(is_active=False)
+
+        assigned_auditor = self.request.query_params.get("assigned_auditor")
+        if assigned_auditor:
+            if assigned_auditor.isdigit():
+                queryset = queryset.filter(assigned_auditor_id=int(assigned_auditor))
+            elif assigned_auditor == "null":
+                queryset = queryset.filter(assigned_auditor__isnull=True)
+
+        return queryset
+
+
+class UserManagementRetrieveUpdateDestroyAPIView(generics.RetrieveUpdateDestroyAPIView):
+    """Admin-only endpoint for retrieving, updating and deleting users."""
+    permission_classes = [IsAuthenticated, AdminOnlyPermission]
+    serializer_class = UserManagementSerializer
+    queryset = User.objects.all()
+
+
+class AuditorReviewQueueAPIView(generics.ListAPIView):
+    """Auditor and Admin endpoint for pending documents."""
+    permission_classes = [IsAuthenticated, DocumentPermission]
+    serializer_class = DocumentSummarySerializer
+    pagination_class = StandardListPagination
+    filter_backends = [filters.SearchFilter, filters.OrderingFilter]
+    search_fields = ["doc_number", "doc_name", "dossier__file_number"]
+    ordering_fields = ["created_at", "dossier__file_number"]
+    ordering = ["-created_at"]
+
+    def get_queryset(self):
+        user = self.request.user
+        # Admin sees all pending documents
+        if user.role == UserRole.ADMIN:
+            return Document.objects.filter(
+                is_deleted=False,
+                status=DocumentStatus.PENDING,
+            ).select_related("dossier", "doc_type", "created_by").order_by("-created_at", "-id")
+        # Auditor sees only pending documents from assigned data_entry users
+        if user.role == UserRole.AUDITOR:
+            return Document.objects.filter(
+                is_deleted=False,
+                created_by__assigned_auditor=user,
+                status=DocumentStatus.PENDING,
+            ).select_related("dossier", "doc_type", "created_by").order_by("-created_at", "-id")
+        # Other roles see nothing
+        return Document.objects.none()

@@ -333,3 +333,126 @@ textarea {
     flex-wrap: wrap;
   }
 }
+
+/* Audit Log Detail View Styles */
+.event-header {
+  font-size: 1.25rem;
+  font-weight: 600;
+  color: #1a202c;
+  margin-bottom: 1rem;
+  padding-bottom: 0.75rem;
+  border-bottom: 2px solid #e2e8f0;
+}
+
+.event-details-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
+  gap: 0.75rem;
+}
+
+.event-detail-row {
+  display: flex;
+  align-items: baseline;
+  gap: 0.5rem;
+  padding: 0.5rem;
+  background: #f8fafc;
+  border-radius: 6px;
+}
+
+.detail-label {
+  font-weight: 600;
+  color: #4a5568;
+  min-width: 100px;
+  flex-shrink: 0;
+}
+
+.detail-value {
+  color: #1a202c;
+  font-weight: 500;
+}
+
+.changes-header {
+  font-size: 1.1rem;
+  font-weight: 600;
+  color: #1a202c;
+  margin-bottom: 1rem;
+  padding-bottom: 0.5rem;
+  border-bottom: 2px solid #e2e8f0;
+}
+
+.changes-table {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+.changes-row {
+  display: grid;
+  grid-template-columns: 1fr 1fr 1fr;
+  gap: 1rem;
+  padding: 0.75rem;
+  background: #f8fafc;
+  border-radius: 6px;
+  border-right: 3px solid transparent;
+  transition: background-color 0.2s;
+}
+
+.changes-row:hover {
+  background: #f1f5f9;
+}
+
+.changes-row.has-changed {
+  background: #fff7ed;
+  border-right-color: #f97316;
+}
+
+.changes-row.has-changed:hover {
+  background: #ffedd5;
+}
+
+.changes-header-row {
+  background: #e2e8f0;
+  font-weight: 600;
+  color: #4a5568;
+  border-right-color: transparent;
+}
+
+.changes-header-row:hover {
+  background: #e2e8f0;
+}
+
+.changes-cell {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.changes-field {
+  font-weight: 600;
+  color: #2d3748;
+}
+
+.changes-old {
+  color: #718096;
+  text-decoration: line-through;
+  opacity: 0.8;
+}
+
+.changes-new {
+  color: #2d3748;
+  font-weight: 500;
+}
+
+.changes-field-header,
+.changes-old-header,
+.changes-new-header {
+  font-weight: 700;
+  color: #1a202c;
+}
+
+.no-changes {
+  text-align: center;
+  color: #718096;
+  padding: 2rem;
+  font-style: italic;
+}

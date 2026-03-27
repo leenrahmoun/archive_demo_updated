@@ -13,6 +13,8 @@ import { AuditLogDetailPage } from "./pages/AuditLogDetailPage";
 import { DocumentFormPage } from "./pages/DocumentFormPage";
 import { RoleGuard } from "./components/RoleGuard";
 import { NotFoundPage } from "./pages/NotFoundPage";
+import { UserManagementPage } from "./pages/UserManagementPage";
+import { ReviewQueuePage } from "./pages/ReviewQueuePage";
 
 function HomeRedirect() {
   const { isAuthenticated } = useAuth();
@@ -66,6 +68,22 @@ export default function App() {
           element={
             <RoleGuard allowedRoles={["admin"]}>
               <AuditLogDetailPage />
+            </RoleGuard>
+          }
+        />
+        <Route
+          path="/review-queue"
+          element={
+            <RoleGuard allowedRoles={["auditor", "admin"]}>
+              <ReviewQueuePage />
+            </RoleGuard>
+          }
+        />
+        <Route
+          path="/admin/users"
+          element={
+            <RoleGuard allowedRoles={["admin"]}>
+              <UserManagementPage />
             </RoleGuard>
           }
         />

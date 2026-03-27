@@ -13,6 +13,20 @@ class UserRole(models.TextChoices):
 
 class User(AbstractUser):
     role = models.CharField(max_length=20, choices=UserRole.choices)
+    assigned_auditor = models.ForeignKey(
+        "self",
+        on_delete=models.SET_NULL,
+        related_name="assigned_data_entries",
+        null=True,
+        blank=True,
+        limit_choices_to={"role": UserRole.AUDITOR},
+    )
+
+    def clean(self) -> None:
+        super().clean()
+        # Only data_entry users can have an assigned auditor
+        if self.assigned_auditor is not None and self.role != UserRole.DATA_ENTRY:
+            raise ValidationError({"assigned_auditor": "Only Data Entry users can have an assigned auditor."})
 
     def __str__(self) -> str:
         return f"{self.username} ({self.role})"

@@ -5,15 +5,78 @@ from rest_framework import serializers
 from rest_framework_simplejwt.tokens import RefreshToken, TokenError
 
 from core.models import AuditAction, AuditLog, Document, DocumentStatus, DocumentType, Dossier, Governorate, UserRole
+from core.services.document_storage_service import (
+    DocumentUploadError,
+    delete_uploaded_pdf,
+    store_uploaded_pdf,
+    validate_uploaded_pdf,
+)
 from core.services.dossier_service import DossierCreationError, create_dossier_with_first_document
 
 User = get_user_model()
 
 
 class MeSerializer(serializers.ModelSerializer):
+    assigned_auditor_id = serializers.PrimaryKeyRelatedField(
+        source="assigned_auditor",
+        queryset=User.objects.filter(role=UserRole.AUDITOR),
+        required=False,
+        allow_null=True,
+    )
+
     class Meta:
         model = User
-        fields = ("id", "username", "first_name", "last_name", "email", "is_active", "role")
+        fields = ("id", "username", "first_name", "last_name", "email", "is_active", "role", "assigned_auditor_id")
+
+
+class UserManagementSerializer(serializers.ModelSerializer):
+    """Admin-only serializer for user CRUD with assigned_auditor linkage."""
+    assigned_auditor_id = serializers.PrimaryKeyRelatedField(
+        source="assigned_auditor",
+        queryset=User.objects.filter(role=UserRole.AUDITOR),
+        required=False,
+        allow_null=True,
+    )
+    password = serializers.CharField(write_only=True, required=False)
+
+    class Meta:
+        model = User
+        fields = (
+            "id",
+            "username",
+            "password",
+            "first_name",
+            "last_name",
+            "email",
+            "is_active",
+            "role",
+            "assigned_auditor_id",
+            "date_joined",
+        )
+        read_only_fields = ("date_joined",)
+
+    def validate(self, data):
+        """Clear assigned_auditor if role is not data_entry."""
+        role = data.get("role") or getattr(self.instance, "role", None)
+        if role != UserRole.DATA_ENTRY:
+            data["assigned_auditor"] = None
+        return data
+
+    def create(self, validated_data):
+        password = validated_data.pop("password", None)
+        user = super().create(validated_data)
+        if password:
+            user.set_password(password)
+            user.save()
+        return user
+
+    def update(self, instance, validated_data):
+        password = validated_data.pop("password", None)
+        user = super().update(instance, validated_data)
+        if password:
+            user.set_password(password)
+            user.save()
+        return user
 
 
 class LogoutSerializer(serializers.Serializer):
@@ -51,6 +114,7 @@ class AuditActorSerializer(serializers.ModelSerializer):
 
 class AuditLogSerializer(serializers.ModelSerializer):
     actor = AuditActorSerializer(source="user", read_only=True)
+    entity_reference = serializers.SerializerMethodField()
 
     class Meta:
         model = AuditLog
@@ -59,6 +123,7 @@ class AuditLogSerializer(serializers.ModelSerializer):
             "action",
             "entity_type",
             "entity_id",
+            "entity_reference",
             "old_values",
             "new_values",
             "ip_address",
@@ -66,14 +131,45 @@ class AuditLogSerializer(serializers.ModelSerializer):
             "actor",
         )
 
+    def get_entity_reference(self, obj):
+        """Return human-readable reference for the entity if available."""
+        try:
+            if obj.entity_type == "document":
+                from core.models import Document
+                doc = Document.objects.filter(id=obj.entity_id).select_related("doc_type").values("doc_number", "doc_name", "doc_type__name").first()
+                if doc:
+                    return doc["doc_type__name"] if doc["doc_type__name"] else None
+            elif obj.entity_type == "dossier":
+                from core.models import Dossier
+                dossier = Dossier.objects.filter(id=obj.entity_id).values("file_number").first()
+                if dossier:
+                    return dossier["file_number"]
+            elif obj.entity_type == "user":
+                from core.models import User
+                user = User.objects.filter(id=obj.entity_id).values("username").first()
+                if user:
+                    return user["username"]
+        except Exception:
+            pass
+        return None
+
 
 class DocumentSummarySerializer(serializers.ModelSerializer):
+    is_approved_by_admin = serializers.SerializerMethodField()
+    is_rejected_by_admin = serializers.SerializerMethodField()
+    dossier_name = serializers.CharField(source="dossier.file_number", read_only=True)
+    doc_type_name = serializers.CharField(source="doc_type.name", read_only=True)
+    created_by_name = serializers.CharField(source="created_by.username", read_only=True)
+    reviewed_by_name = serializers.CharField(source="reviewed_by.username", read_only=True)
+
     class Meta:
         model = Document
         fields = (
             "id",
             "dossier",
+            "dossier_name",
             "doc_type",
+            "doc_type_name",
             "doc_number",
             "doc_name",
             "file_path",
@@ -82,12 +178,55 @@ class DocumentSummarySerializer(serializers.ModelSerializer):
             "status",
             "notes",
             "created_by",
+            "created_by_name",
+            "reviewed_by",
+            "reviewed_by_name",
             "created_at",
             "updated_at",
+            "is_approved_by_admin",
+            "is_rejected_by_admin",
         )
+
+    def get_is_approved_by_admin(self, obj):
+        """
+        Returns True if document is approved and reviewed by an admin user,
+        indicating that an admin approved a document in the auditor's scope.
+        """
+        if obj.status != DocumentStatus.APPROVED:
+            return False
+        if not obj.created_by:
+            return False
+        # Get the assigned auditor for the creator (if creator is data_entry)
+        assigned_auditor_id = getattr(obj.created_by, "assigned_auditor_id", None)
+        if not assigned_auditor_id:
+            return False
+        # Check if reviewer exists and is an admin
+        if not obj.reviewed_by:
+            return False
+        return obj.reviewed_by.role == UserRole.ADMIN
+
+    def get_is_rejected_by_admin(self, obj):
+        """
+        Returns True if document is rejected and reviewed by an admin user,
+        indicating that an admin rejected a document in the auditor's scope.
+        """
+        if obj.status != DocumentStatus.REJECTED:
+            return False
+        if not obj.created_by:
+            return False
+        # Get the assigned auditor for the creator (if creator is data_entry)
+        assigned_auditor_id = getattr(obj.created_by, "assigned_auditor_id", None)
+        if not assigned_auditor_id:
+            return False
+        # Check if reviewer exists and is an admin
+        if not obj.reviewed_by:
+            return False
+        return obj.reviewed_by.role == UserRole.ADMIN
 
 
 class DocumentCreateSerializer(serializers.ModelSerializer):
+    file = serializers.FileField(write_only=True, required=True)
+
     class Meta:
         model = Document
         fields = (
@@ -100,8 +239,16 @@ class DocumentCreateSerializer(serializers.ModelSerializer):
             "file_size_kb",
             "mime_type",
             "notes",
+            "file",
         )
-        read_only_fields = ("id",)
+        read_only_fields = ("id", "file_path", "file_size_kb", "mime_type")
+
+    def validate_file(self, value):
+        try:
+            validate_uploaded_pdf(value)
+        except DocumentUploadError as exc:
+            raise serializers.ValidationError(str(exc)) from exc
+        return value
 
     def validate_dossier(self, value):
         if value.is_archived:
@@ -110,8 +257,20 @@ class DocumentCreateSerializer(serializers.ModelSerializer):
 
     def create(self, validated_data):
         user = self.context["request"].user
-        validated_data["created_by"] = user
-        document = super().create(validated_data)
+        uploaded_file = validated_data.pop("file")
+        stored_file_data = store_uploaded_pdf(dossier_id=validated_data["dossier"].id, uploaded_file=uploaded_file)
+        stored_file_path = stored_file_data["file_path"]
+        document = Document(created_by=user, **validated_data, **stored_file_data)
+        try:
+            document.full_clean()
+            document.save()
+        except DjangoValidationError as exc:
+            delete_uploaded_pdf(stored_file_path)
+            raise serializers.ValidationError(exc.message_dict) from exc
+        except IntegrityError as exc:
+            delete_uploaded_pdf(stored_file_path)
+            raise serializers.ValidationError({"non_field_errors": ["Failed to create document."]}) from exc
+
         AuditLog.objects.create(
             user=user,
             action=AuditAction.CREATE,
@@ -164,6 +323,9 @@ class DocumentUpdateSerializer(serializers.ModelSerializer):
         return document
 
 class DossierListSerializer(serializers.ModelSerializer):
+    governorate_name = serializers.CharField(source="governorate.name", read_only=True)
+    created_by_name = serializers.CharField(source="created_by.username", read_only=True)
+
     class Meta:
         model = Dossier
         fields = (
@@ -173,10 +335,12 @@ class DossierListSerializer(serializers.ModelSerializer):
             "national_id",
             "personal_id",
             "governorate",
+            "governorate_name",
             "room_number",
             "column_number",
             "shelf_number",
             "created_by",
+            "created_by_name",
             "created_at",
             "updated_at",
             "is_archived",
@@ -198,24 +362,18 @@ class DossierDetailSerializer(DossierListSerializer):
             qs = qs.filter(status__in=["pending", "approved"])
         return DocumentSummarySerializer(qs, many=True).data
 
-
 class FirstDocumentInputSerializer(serializers.Serializer):
     doc_type_id = serializers.PrimaryKeyRelatedField(queryset=DocumentType.objects.all(), source="doc_type")
     doc_number = serializers.CharField(max_length=100)
     doc_name = serializers.CharField(max_length=200)
-    file_path = serializers.CharField(max_length=500)
-    file_size_kb = serializers.IntegerField(min_value=Document.MIN_FILE_SIZE_KB, max_value=Document.MAX_FILE_SIZE_KB)
-    mime_type = serializers.CharField(max_length=50)
     notes = serializers.CharField(max_length=500, required=False, allow_blank=True, allow_null=True)
+    file = serializers.FileField(write_only=True, required=True)
 
-    def validate_mime_type(self, value: str) -> str:
-        if value != Document.PDF_MIME_TYPE:
-            raise serializers.ValidationError("Only PDF uploads are allowed.")
-        return value
-
-    def validate_file_path(self, value: str) -> str:
-        if not value.lower().endswith(".pdf"):
-            raise serializers.ValidationError("File path must point to a .pdf file.")
+    def validate_file(self, value):
+        try:
+            validate_uploaded_pdf(value)
+        except DocumentUploadError as exc:
+            raise serializers.ValidationError(str(exc)) from exc
         return value
 
 
@@ -229,6 +387,36 @@ class DossierCreateSerializer(serializers.Serializer):
     column_number = serializers.CharField(max_length=20)
     shelf_number = serializers.CharField(max_length=20)
     first_document = FirstDocumentInputSerializer(required=True)
+
+    def to_internal_value(self, data):
+        request_files = getattr(self.context.get("request"), "FILES", None)
+        keys = list(data.keys()) if hasattr(data, "keys") else []
+        if request_files is not None:
+            for key in request_files.keys():
+                if key not in keys:
+                    keys.append(key)
+
+        if any(str(key).startswith("first_document.") for key in keys):
+            normalized_data = {}
+            first_document_data = {}
+
+            for key in keys:
+                if request_files is not None and key in request_files:
+                    value = request_files.get(key)
+                else:
+                    value = data.get(key)
+                if str(key).startswith("first_document."):
+                    first_document_key = str(key).split(".", 1)[1]
+                    first_document_data[first_document_key] = value
+                else:
+                    normalized_data[key] = value
+
+            if first_document_data:
+                normalized_data["first_document"] = first_document_data
+
+            data = normalized_data
+
+        return super().to_internal_value(data)
 
     def validate(self, attrs):
         if not attrs.get("first_document"):

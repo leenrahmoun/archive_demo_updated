@@ -67,25 +67,22 @@ export function CreateDossierPage() {
       return;
     }
 
-    const payload = {
-      file_number: form.file_number,
-      full_name: form.full_name,
-      national_id: form.national_id,
-      personal_id: form.personal_id,
-      governorate_id: form.governorate_id ? Number(form.governorate_id) : null,
-      room_number: form.room_number,
-      column_number: form.column_number,
-      shelf_number: form.shelf_number,
-      first_document: {
-        doc_type_id: Number(form.doc_type_id),
-        doc_number: form.doc_number,
-        doc_name: form.doc_name,
-        file_path: `uploads/${selectedFile.name}`,
-        file_size_kb: fileSizeKb,
-        mime_type: selectedFile.type,
-        notes: form.notes || "",
-      },
-    };
+    const payload = new FormData();
+    payload.append("file_number", form.file_number);
+    payload.append("full_name", form.full_name);
+    payload.append("national_id", form.national_id);
+    payload.append("personal_id", form.personal_id);
+    if (form.governorate_id) {
+      payload.append("governorate_id", form.governorate_id);
+    }
+    payload.append("room_number", form.room_number);
+    payload.append("column_number", form.column_number);
+    payload.append("shelf_number", form.shelf_number);
+    payload.append("first_document.doc_type_id", form.doc_type_id);
+    payload.append("first_document.doc_number", form.doc_number);
+    payload.append("first_document.doc_name", form.doc_name);
+    payload.append("first_document.notes", form.notes || "");
+    payload.append("first_document.file", selectedFile);
 
     setIsSubmitting(true);
     try {

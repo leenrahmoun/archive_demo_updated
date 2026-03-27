@@ -39,3 +39,8 @@ export async function updateDocument(id, payload) {
   const response = await api.put(`/api/documents/${id}/`, payload);
   return response.data;
 }
+
+export async function getAuditorReviewQueue(params) {
+  const response = await api.get("/api/auditor/review-queue/", { params });
+  return response.data;
+}

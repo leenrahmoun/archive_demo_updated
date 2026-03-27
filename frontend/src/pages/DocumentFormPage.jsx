@@ -33,7 +33,7 @@ export function DocumentFormPage() {
 
   useEffect(() => {
     getDocumentTypes().then(setDocumentTypes).catch(() => setDocumentTypes([]));
-    
+
     if (isEditMode) {
       getDocumentById(id)
         .then((doc) => {
@@ -69,9 +69,10 @@ export function DocumentFormPage() {
     event.preventDefault();
     setErrors([]);
 
-    let finalFileSizeKb = existingDoc?.file_size_kb;
-    let finalFilePath = existingDoc?.file_path;
-    let finalMimeType = existingDoc?.mime_type || "application/pdf";
+    if (!selectedFile && !isEditMode) {
+      setErrors(["يجب اختيار ملف PDF للوثيقة."]);
+      return;
+    }
 
     if (selectedFile) {
       if (selectedFile.type !== "application/pdf") {
@@ -82,34 +83,42 @@ export function DocumentFormPage() {
         setErrors([`حجم الملف يجب أن يكون بين ${MIN_FILE_SIZE_KB}KB و ${MAX_FILE_SIZE_KB}KB.`]);
         return;
       }
-      finalFileSizeKb = fileSizeKb;
-      finalFilePath = `uploads/${selectedFile.name}`;
-      finalMimeType = selectedFile.type;
-    } else if (!isEditMode) {
-      setErrors(["يجب اختيار ملف PDF للوثيقة."]);
-      return;
-    }
-
-    const payload = {
-      doc_type: Number(form.doc_type),
-      doc_number: form.doc_number,
-      doc_name: form.doc_name,
-      file_path: finalFilePath,
-      file_size_kb: finalFileSizeKb,
-      mime_type: finalMimeType,
-      notes: form.notes || "",
-    };
-
-    if (!isEditMode) {
-      payload.dossier = Number(dossierId);
     }
 
     setIsSubmitting(true);
     try {
       if (isEditMode) {
+        let finalFileSizeKb = existingDoc?.file_size_kb;
+        let finalFilePath = existingDoc?.file_path;
+        let finalMimeType = existingDoc?.mime_type || "application/pdf";
+
+        if (selectedFile) {
+          finalFileSizeKb = fileSizeKb;
+          finalFilePath = `uploads/dossier_${dossierId}/${selectedFile.name}`;
+          finalMimeType = selectedFile.type;
+        }
+
+        const payload = {
+          doc_type: Number(form.doc_type),
+          doc_number: form.doc_number,
+          doc_name: form.doc_name,
+          file_path: finalFilePath,
+          file_size_kb: finalFileSizeKb,
+          mime_type: finalMimeType,
+          notes: form.notes || "",
+        };
+
         await updateDocument(id, payload);
         navigate(`/documents/${id}`);
       } else {
+        const payload = new FormData();
+        payload.append("dossier", String(Number(dossierId)));
+        payload.append("doc_type", form.doc_type);
+        payload.append("doc_number", form.doc_number);
+        payload.append("doc_name", form.doc_name);
+        payload.append("notes", form.notes || "");
+        payload.append("file", selectedFile);
+
         const created = await createDocument(payload);
         navigate(`/documents/${created.id}`);
       }
@@ -127,9 +136,9 @@ export function DocumentFormPage() {
 
   return (
     <section>
-      <PageHeader 
-        title={isEditMode ? "تعديل الوثيقة" : "إضافة وثيقة جديدة"} 
-        subtitle={isEditMode ? "تعديل بيانات الوثيقة" : `إضافة وثيقة للإضبارة رقم ${dossierId}`} 
+      <PageHeader
+        title={isEditMode ? "تعديل الوثيقة" : "إضافة وثيقة جديدة"}
+        subtitle={isEditMode ? "تعديل بيانات الوثيقة" : `إضافة وثيقة للإضبارة رقم ${dossierId}`}
       />
       <form className="card form-grid" onSubmit={onSubmit}>
         <select value={form.doc_type} onChange={(e) => setForm((p) => ({ ...p, doc_type: e.target.value }))} required>
@@ -143,7 +152,7 @@ export function DocumentFormPage() {
         <input placeholder="رقم الوثيقة" value={form.doc_number} onChange={(e) => setForm((p) => ({ ...p, doc_number: e.target.value }))} required />
         <input placeholder="اسم الوثيقة" value={form.doc_name} onChange={(e) => setForm((p) => ({ ...p, doc_name: e.target.value }))} required />
         <input placeholder="ملاحظات (اختياري)" value={form.notes} onChange={(e) => setForm((p) => ({ ...p, notes: e.target.value }))} />
-        
+
         <div className="full-row">
           <label className="block mb-2 text-sm">
             النسخة الإلكترونية للوثيقة (PDF)

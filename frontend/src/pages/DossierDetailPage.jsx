@@ -86,7 +86,7 @@ export function DossierDetailPage() {
                 <td>
                   <StatusBadge status={doc.status} />
                 </td>
-                <td className="path-text">{doc.file_path}</td>
+                <td className="path-text">{doc.doc_type_name || doc.doc_type}</td>
               </tr>
             ))}
           </tbody>

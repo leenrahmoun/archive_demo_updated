@@ -1,5 +1,12 @@
+import tempfile
 from datetime import timedelta
+from pathlib import Path
+from unittest.mock import patch
 
+from django.conf import settings
+from django.core.exceptions import ValidationError
+from django.core.files.uploadedfile import SimpleUploadedFile
+from django.test import override_settings
 from django.utils import timezone
 from rest_framework import status
 from rest_framework.test import APITestCase
@@ -9,8 +16,31 @@ from rest_framework_simplejwt.token_blacklist.models import BlacklistedToken, Ou
 from core.models import AuditAction, AuditLog, Document, DocumentStatus, DocumentType, Dossier, Governorate, User, UserRole
 
 
-class DossierApiTests(APITestCase):
+class TemporaryMediaRootMixin:
     def setUp(self):
+        self._temp_media_root = tempfile.TemporaryDirectory()
+        self._media_override = override_settings(MEDIA_ROOT=self._temp_media_root.name)
+        self._media_override.enable()
+        super().setUp()
+
+    def tearDown(self):
+        self._media_override.disable()
+        self._temp_media_root.cleanup()
+        super().tearDown()
+
+    def make_uploaded_pdf(self, name="document.pdf", size_kb=120, content_type="application/pdf"):
+        header = b"%PDF-1.4\n"
+        payload_size = max((size_kb * 1024) - len(header), 0)
+        content = header + (b"0" * payload_size)
+        return SimpleUploadedFile(name, content, content_type=content_type)
+
+    def assertStoredFileExists(self, file_path):
+        self.assertTrue((Path(settings.MEDIA_ROOT) / file_path).exists())
+
+
+class DossierApiTests(TemporaryMediaRootMixin, APITestCase):
+    def setUp(self):
+        super().setUp()
         self.user = User.objects.create_user(
             username="entry",
             password="pass12345",
@@ -34,74 +64,64 @@ class DossierApiTests(APITestCase):
             "room_number": "R1",
             "column_number": "C1",
             "shelf_number": "S1",
-            "first_document": {
-                "doc_type_id": self.doc_type.id,
-                "doc_number": "DOC-001",
-                "doc_name": "First doc",
-                "file_path": "archive/00/00/000001/appointment_1.pdf",
-                "file_size_kb": 120,
-                "mime_type": "application/pdf",
-                "notes": "ok",
-            },
+            "first_document.doc_type_id": str(self.doc_type.id),
+            "first_document.doc_number": "DOC-001",
+            "first_document.doc_name": "First doc",
+            "first_document.notes": "ok",
+            "first_document.file": self.make_uploaded_pdf(name="appointment_1.pdf", size_kb=120),
         }
         payload.update(overrides)
         return payload
 
     def test_create_dossier_with_first_document_success(self):
-        response = self.client.post("/api/dossiers/", self._payload(), format="json")
+        response = self.client.post("/api/dossiers/", self._payload(), format="multipart")
         self.assertEqual(response.status_code, status.HTTP_201_CREATED)
         self.assertEqual(Dossier.objects.count(), 1)
         self.assertEqual(Document.objects.count(), 1)
         self.assertIn("documents", response.data)
         self.assertEqual(len(response.data["documents"]), 1)
+        dossier = Dossier.objects.get()
+        document = Document.objects.get()
+        self.assertTrue(document.file_path.startswith(f"uploads/dossier_{dossier.id}/"))
+        self.assertEqual(document.file_size_kb, 120)
+        self.assertEqual(document.mime_type, "application/pdf")
+        self.assertStoredFileExists(document.file_path)
 
     def test_create_dossier_rejects_missing_first_document(self):
         payload = self._payload()
-        payload.pop("first_document")
-        response = self.client.post("/api/dossiers/", payload, format="json")
+        for key in list(payload.keys()):
+            if key.startswith("first_document."):
+                payload.pop(key)
+        response = self.client.post("/api/dossiers/", payload, format="multipart")
         self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
         self.assertEqual(Dossier.objects.count(), 0)
         self.assertEqual(Document.objects.count(), 0)
         self.assertIn("first_document", response.data)
 
     def test_create_dossier_rolls_back_when_document_creation_fails(self):
-        response1 = self.client.post("/api/dossiers/", self._payload(), format="json")
-        self.assertEqual(response1.status_code, status.HTTP_201_CREATED)
-        self.assertEqual(Dossier.objects.count(), 1)
-        self.assertEqual(Document.objects.count(), 1)
+        with patch(
+            "core.services.dossier_service.Document.save",
+            side_effect=ValidationError({"doc_number": ["Save failed."]}),
+        ):
+            response = self.client.post("/api/dossiers/", self._payload(), format="multipart")
 
-        second = self._payload(
-            file_number="DOS-002",
-            national_id="NAT-002",
-            personal_id="PER-002",
-            first_document={
-                "doc_type_id": self.doc_type.id,
-                "doc_number": "DOC-002",
-                "doc_name": "Second doc",
-                # duplicate unique file_path forces document create failure
-                "file_path": "archive/00/00/000001/appointment_1.pdf",
-                "file_size_kb": 130,
-                "mime_type": "application/pdf",
-            },
-        )
-        response2 = self.client.post("/api/dossiers/", second, format="json")
-        self.assertEqual(response2.status_code, status.HTTP_400_BAD_REQUEST)
-        # dossier must not persist when first document fails
-        self.assertEqual(Dossier.objects.count(), 1)
-        self.assertEqual(Document.objects.count(), 1)
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertEqual(Dossier.objects.count(), 0)
+        self.assertEqual(Document.objects.count(), 0)
+        self.assertEqual(list(Path(settings.MEDIA_ROOT).rglob("*.pdf")), [])
 
     def test_create_dossier_rejects_non_pdf(self):
         payload = self._payload(
-            first_document={
-                "doc_type_id": self.doc_type.id,
-                "doc_number": "DOC-003",
-                "doc_name": "Bad mime",
-                "file_path": "archive/00/00/000001/appointment_3.jpg",
-                "file_size_kb": 200,
-                "mime_type": "image/jpeg",
+            **{
+                "first_document.doc_name": "Bad mime",
+                "first_document.file": self.make_uploaded_pdf(
+                    name="appointment_3.jpg",
+                    size_kb=200,
+                    content_type="image/jpeg",
+                ),
             }
         )
-        response = self.client.post("/api/dossiers/", payload, format="json")
+        response = self.client.post("/api/dossiers/", payload, format="multipart")
         self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
         self.assertEqual(Dossier.objects.count(), 0)
         self.assertEqual(Document.objects.count(), 0)
@@ -590,6 +610,11 @@ class DocumentListQueryApiTests(APITestCase):
         self.assertEqual(ids, {self.doc_draft.id, self.doc_approved.id})
 
     def test_document_role_visibility_remains_unchanged(self):
+        """Verify role-based document visibility with auditor scope via assigned_auditor linkage."""
+        # Set up assigned_auditor linkage so auditor can see documents from data_entry
+        self.data_entry.assigned_auditor = self.auditor
+        self.data_entry.save()
+
         self.client.force_authenticate(user=self.reader)
         reader_response = self.client.get("/api/documents/")
         self.assertEqual(reader_response.status_code, status.HTTP_200_OK)
@@ -599,11 +624,10 @@ class DocumentListQueryApiTests(APITestCase):
         self.client.force_authenticate(user=self.auditor)
         auditor_response = self.client.get("/api/documents/")
         self.assertEqual(auditor_response.status_code, status.HTTP_200_OK)
-        self.assertEqual(auditor_response.data["count"], 2)
-        self.assertEqual(
-            {item["id"] for item in auditor_response.data["results"]},
-            {self.doc_pending.id, self.doc_approved.id},
-        )
+        # Auditor sees documents from assigned data_entry with statuses: pending, rejected, approved (draft excluded)
+        # doc_approved (created_by=data_entry) and doc_rejected_deleted (is_deleted=True) - only doc_approved visible
+        self.assertEqual(auditor_response.data["count"], 1)
+        self.assertEqual(auditor_response.data["results"][0]["id"], self.doc_approved.id)
 
         self.client.force_authenticate(user=self.admin)
         admin_response = self.client.get("/api/documents/")
@@ -656,8 +680,9 @@ class DocumentListQueryApiTests(APITestCase):
         self.assertEqual(len(paged.data["results"]), 2)
 
 
-class DocumentCreateUpdateApiTests(APITestCase):
+class DocumentCreateUpdateApiTests(TemporaryMediaRootMixin, APITestCase):
     def setUp(self):
+        super().setUp()
         self.admin = User.objects.create_user(username="cu_admin", password="pass12345", role=UserRole.ADMIN)
         self.data_entry = User.objects.create_user(username="cu_entry", password="pass12345", role=UserRole.DATA_ENTRY)
         self.auditor = User.objects.create_user(username="cu_auditor", password="pass12345", role=UserRole.AUDITOR)
@@ -689,31 +714,31 @@ class DocumentCreateUpdateApiTests(APITestCase):
 
     def test_create_document_success(self):
         payload = {
-            "dossier": self.dossier_1.id,
-            "doc_type": self.doc_type_1.id,
+            "dossier": str(self.dossier_1.id),
+            "doc_type": str(self.doc_type_1.id),
             "doc_number": "NEW-DOC-1",
             "doc_name": "New Document",
-            "file_path": "archive/new_doc1.pdf",
-            "file_size_kb": 200,
-            "mime_type": "application/pdf"
+            "file": self.make_uploaded_pdf(name="new_doc1.pdf", size_kb=200),
         }
-        res = self.client.post("/api/documents/", payload, format="json")
+        res = self.client.post("/api/documents/", payload, format="multipart")
         self.assertEqual(res.status_code, status.HTTP_201_CREATED)
         doc = Document.objects.get(doc_number="NEW-DOC-1")
         self.assertEqual(doc.status, DocumentStatus.DRAFT)
+        self.assertTrue(doc.file_path.startswith(f"uploads/dossier_{self.dossier_1.id}/"))
+        self.assertEqual(doc.file_size_kb, 200)
+        self.assertEqual(doc.mime_type, "application/pdf")
+        self.assertStoredFileExists(doc.file_path)
         self.assertTrue(AuditLog.objects.filter(action=AuditAction.CREATE, entity_id=doc.id).exists())
 
     def test_create_document_on_archived_dossier_fails(self):
         payload = {
-            "dossier": self.dossier_archived.id,
-            "doc_type": self.doc_type_1.id,
+            "dossier": str(self.dossier_archived.id),
+            "doc_type": str(self.doc_type_1.id),
             "doc_number": "NEW-DOC-2",
             "doc_name": "New Document",
-            "file_path": "archive/new_doc2.pdf",
-            "file_size_kb": 200,
-            "mime_type": "application/pdf"
+            "file": self.make_uploaded_pdf(name="new_doc2.pdf", size_kb=200),
         }
-        res = self.client.post("/api/documents/", payload, format="json")
+        res = self.client.post("/api/documents/", payload, format="multipart")
         self.assertEqual(res.status_code, status.HTTP_400_BAD_REQUEST)
         self.assertIn("dossier", res.data)
 
@@ -818,6 +843,90 @@ class DocumentCreateUpdateApiTests(APITestCase):
         # Verify document was not modified
         other_doc.refresh_from_db()
         self.assertEqual(other_doc.doc_number, "OTHER-DOC-2")
+
+
+class UserAssignedAuditorLinkageTests(APITestCase):
+    """
+    Step b: Verify data_entry ↔ assigned_auditor linkage model behavior.
+    Tests model field, validation, and minimal serializer exposure.
+    """
+
+    def setUp(self):
+        self.admin = User.objects.create_user(username="link_admin", password="pass12345", role=UserRole.ADMIN)
+        self.auditor = User.objects.create_user(username="link_auditor", password="pass12345", role=UserRole.AUDITOR)
+        self.auditor2 = User.objects.create_user(username="link_auditor2", password="pass12345", role=UserRole.AUDITOR)
+        self.data_entry = User.objects.create_user(username="link_entry", password="pass12345", role=UserRole.DATA_ENTRY)
+        self.reader = User.objects.create_user(username="link_reader", password="pass12345", role=UserRole.READER)
+
+    def test_data_entry_can_have_assigned_auditor(self):
+        """Data entry user can be linked to an auditor."""
+        self.data_entry.assigned_auditor = self.auditor
+        self.data_entry.full_clean()
+        self.data_entry.save()
+        self.data_entry.refresh_from_db()
+        self.assertEqual(self.data_entry.assigned_auditor_id, self.auditor.id)
+
+    def test_auditor_cannot_have_assigned_auditor(self):
+        """Auditor user cannot have an assigned auditor (validation error)."""
+        self.auditor.assigned_auditor = self.auditor2
+        with self.assertRaises(ValidationError) as ctx:
+            self.auditor.full_clean()
+        self.assertIn("assigned_auditor", ctx.exception.message_dict)
+
+    def test_admin_cannot_have_assigned_auditor(self):
+        """Admin user cannot have an assigned auditor (validation error)."""
+        self.admin.assigned_auditor = self.auditor
+        with self.assertRaises(ValidationError) as ctx:
+            self.admin.full_clean()
+        self.assertIn("assigned_auditor", ctx.exception.message_dict)
+
+    def test_reader_cannot_have_assigned_auditor(self):
+        """Reader user cannot have an assigned auditor (validation error)."""
+        self.reader.assigned_auditor = self.auditor
+        with self.assertRaises(ValidationError) as ctx:
+            self.reader.full_clean()
+        self.assertIn("assigned_auditor", ctx.exception.message_dict)
+
+    def test_data_entry_can_clear_assigned_auditor(self):
+        """Data entry user can have assigned_auditor set to null."""
+        self.data_entry.assigned_auditor = self.auditor
+        self.data_entry.save()
+        self.data_entry.assigned_auditor = None
+        self.data_entry.full_clean()
+        self.data_entry.save()
+        self.data_entry.refresh_from_db()
+        self.assertIsNone(self.data_entry.assigned_auditor_id)
+
+    def test_auditor_reverse_relation_shows_assigned_data_entries(self):
+        """Auditor can see their assigned data entries via reverse relation."""
+        self.data_entry.assigned_auditor = self.auditor
+        self.data_entry.save()
+        assigned_ids = list(self.auditor.assigned_data_entries.values_list("id", flat=True))
+        self.assertIn(self.data_entry.id, assigned_ids)
+
+    def test_me_serializer_includes_assigned_auditor_id(self):
+        """MeSerializer exposes assigned_auditor_id for data_entry users."""
+        from core.serializers import MeSerializer
+        self.data_entry.assigned_auditor = self.auditor
+        self.data_entry.save()
+        serializer = MeSerializer(self.data_entry)
+        self.assertEqual(serializer.data["assigned_auditor_id"], self.auditor.id)
+
+    def test_me_serializer_assigned_auditor_id_null_when_not_set(self):
+        """MeSerializer returns null for assigned_auditor_id when not set."""
+        from core.serializers import MeSerializer
+        serializer = MeSerializer(self.data_entry)
+        self.assertIsNone(serializer.data["assigned_auditor_id"])
+
+    def test_me_serializer_only_accepts_auditor_ids(self):
+        """MeSerializer validation only accepts auditor user IDs."""
+        from core.serializers import MeSerializer
+        # Attempt to assign a non-auditor (admin) as assigned_auditor
+        data = {"assigned_auditor_id": self.admin.id}
+        serializer = MeSerializer(self.data_entry, data=data, partial=True)
+        # Should fail validation because queryset is limited to auditors
+        self.assertFalse(serializer.is_valid())
+        self.assertIn("assigned_auditor_id", serializer.errors)
 
 
 class SeedLookupsCommandTests(APITestCase):
@@ -977,3 +1086,616 @@ class DossierDetailDocumentVisibilityTests(APITestCase):
         response = self.client.get(self.url)
         self.assertEqual(response.status_code, status.HTTP_404_NOT_FOUND)
 
+
+class AdminUserManagementApiTests(APITestCase):
+    """
+    Step c: Admin-only user management endpoint tests.
+    Verify CRUD operations and assigned_auditor assignment work correctly.
+    """
+
+    def setUp(self):
+        self.admin = User.objects.create_user(username="um_admin", password="pass12345", role=UserRole.ADMIN)
+        self.auditor = User.objects.create_user(username="um_auditor", password="pass12345", role=UserRole.AUDITOR)
+        self.auditor2 = User.objects.create_user(username="um_auditor2", password="pass12345", role=UserRole.AUDITOR)
+        self.data_entry = User.objects.create_user(username="um_entry", password="pass12345", role=UserRole.DATA_ENTRY)
+        self.reader = User.objects.create_user(username="um_reader", password="pass12345", role=UserRole.READER)
+
+        self.client.force_authenticate(user=self.admin)
+
+    def test_admin_can_list_users(self):
+        """Admin can list all users via /api/users/."""
+        response = self.client.get("/api/users/")
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertIn("results", response.data)
+        self.assertEqual(response.data["count"], 5)  # all users created in setUp
+
+    def test_non_admin_cannot_list_users(self):
+        """Non-admin users are denied access to user list."""
+        self.client.force_authenticate(user=self.auditor)
+        response = self.client.get("/api/users/")
+        self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
+
+    def test_admin_can_create_user(self):
+        """Admin can create new users via POST /api/users/."""
+        payload = {
+            "username": "new_entry",
+            "password": "newpass123",
+            "first_name": "New",
+            "last_name": "Entry",
+            "email": "new@example.com",
+            "role": UserRole.DATA_ENTRY,
+            "is_active": True,
+        }
+        response = self.client.post("/api/users/", payload, format="json")
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+        self.assertEqual(response.data["username"], "new_entry")
+        self.assertEqual(response.data["role"], UserRole.DATA_ENTRY)
+
+    def test_admin_can_create_data_entry_with_assigned_auditor(self):
+        """Admin can create data_entry user with assigned_auditor."""
+        payload = {
+            "username": "new_entry_with_auditor",
+            "password": "newpass123",
+            "first_name": "New",
+            "last_name": "Entry",
+            "email": "new2@example.com",
+            "role": UserRole.DATA_ENTRY,
+            "is_active": True,
+            "assigned_auditor_id": self.auditor.id,
+        }
+        response = self.client.post("/api/users/", payload, format="json")
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+        self.assertEqual(response.data["assigned_auditor_id"], self.auditor.id)
+
+    def test_admin_cannot_create_non_data_entry_with_assigned_auditor(self):
+        """Admin cannot assign auditor to non-data_entry user."""
+        payload = {
+            "username": "new_reader_with_auditor",
+            "password": "newpass123",
+            "first_name": "New",
+            "last_name": "Reader",
+            "email": "new3@example.com",
+            "role": UserRole.READER,
+            "is_active": True,
+            "assigned_auditor_id": self.auditor.id,
+        }
+        response = self.client.post("/api/users/", payload, format="json")
+        # Should succeed but assigned_auditor_id should be ignored or cause validation error
+        # Based on serializer validation, it should be cleared
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+        self.assertIsNone(response.data["assigned_auditor_id"])
+
+    def test_admin_can_update_user_role(self):
+        """Admin can update user role via PUT /api/users/{id}/."""
+        payload = {
+            "username": self.data_entry.username,
+            "first_name": "Updated",
+            "last_name": "Name",
+            "email": self.data_entry.email,
+            "role": UserRole.AUDITOR,  # Change role
+            "is_active": True,
+        }
+        response = self.client.put(f"/api/users/{self.data_entry.id}/", payload, format="json")
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response.data["role"], UserRole.AUDITOR)
+
+    def test_admin_can_assign_auditor_to_data_entry(self):
+        """Admin can assign auditor to existing data_entry user."""
+        payload = {
+            "username": self.data_entry.username,
+            "first_name": self.data_entry.first_name,
+            "last_name": self.data_entry.last_name,
+            "email": self.data_entry.email,
+            "role": UserRole.DATA_ENTRY,
+            "is_active": True,
+            "assigned_auditor_id": self.auditor.id,
+        }
+        response = self.client.put(f"/api/users/{self.data_entry.id}/", payload, format="json")
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response.data["assigned_auditor_id"], self.auditor.id)
+
+    def test_admin_can_remove_assigned_auditor(self):
+        """Admin can remove assigned_auditor by setting to null."""
+        # First assign an auditor
+        self.data_entry.assigned_auditor = self.auditor
+        self.data_entry.save()
+
+        payload = {
+            "username": self.data_entry.username,
+            "first_name": self.data_entry.first_name,
+            "last_name": self.data_entry.last_name,
+            "email": self.data_entry.email,
+            "role": UserRole.DATA_ENTRY,
+            "is_active": True,
+            "assigned_auditor_id": None,
+        }
+        response = self.client.put(f"/api/users/{self.data_entry.id}/", payload, format="json")
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertIsNone(response.data["assigned_auditor_id"])
+
+    def test_admin_can_filter_users_by_role(self):
+        """Admin can filter users by role query parameter."""
+        response = self.client.get(f"/api/users/?role={UserRole.AUDITOR}")
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response.data["count"], 2)  # um_auditor, um_auditor2
+
+    def test_admin_can_filter_users_by_assigned_auditor(self):
+        """Admin can filter users by assigned_auditor query parameter."""
+        # Assign an auditor first
+        self.data_entry.assigned_auditor = self.auditor
+        self.data_entry.save()
+
+        response = self.client.get(f"/api/users/?assigned_auditor={self.auditor.id}")
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response.data["count"], 1)
+        self.assertEqual(response.data["results"][0]["id"], self.data_entry.id)
+
+    def test_admin_can_search_users(self):
+        """Admin can search users by username, first_name, last_name, email."""
+        response = self.client.get("/api/users/?search=um_entry")
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response.data["count"], 1)
+        self.assertEqual(response.data["results"][0]["username"], "um_entry")
+
+    def test_admin_can_delete_user(self):
+        """Admin can delete user via DELETE /api/users/{id}/."""
+        response = self.client.delete(f"/api/users/{self.data_entry.id}/")
+        self.assertEqual(response.status_code, status.HTTP_204_NO_CONTENT)
+        self.assertFalse(User.objects.filter(id=self.data_entry.id).exists())
+
+    def test_non_admin_cannot_create_user(self):
+        """Non-admin users cannot create users."""
+        self.client.force_authenticate(user=self.auditor)
+        payload = {
+            "username": "hacker",
+            "password": "hack123",
+            "role": UserRole.ADMIN,
+        }
+        response = self.client.post("/api/users/", payload, format="json")
+        self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
+
+    def test_non_admin_cannot_update_user(self):
+        """Non-admin users cannot update users."""
+        self.client.force_authenticate(user=self.reader)
+        payload = {
+            "username": self.data_entry.username,
+            "first_name": "Hacked",
+            "last_name": "Name",
+            "email": self.data_entry.email,
+            "role": UserRole.DATA_ENTRY,
+            "is_active": True,
+        }
+        response = self.client.put(f"/api/users/{self.data_entry.id}/", payload, format="json")
+        self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
+
+    def test_password_is_write_only(self):
+        """Password field is write-only and not returned in response."""
+        payload = {
+            "username": "password_test",
+            "password": "secret123",
+            "first_name": "Test",
+            "last_name": "User",
+            "email": "test@example.com",
+            "role": UserRole.DATA_ENTRY,
+            "is_active": True,
+        }
+        response = self.client.post("/api/users/", payload, format="json")
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+        self.assertNotIn("password", response.data)
+
+
+class AdminApprovalIndicatorTests(APITestCase):
+    """
+    Step d: Verify admin approval indicator for documents in auditor scope.
+    Tests the is_approved_by_admin field behavior.
+    """
+
+    def setUp(self):
+        self.admin = User.objects.create_user(username="ap_admin", password="pass12345", role=UserRole.ADMIN)
+        self.auditor = User.objects.create_user(username="ap_auditor", password="pass12345", role=UserRole.AUDITOR)
+        self.auditor2 = User.objects.create_user(username="ap_auditor2", password="pass12345", role=UserRole.AUDITOR)
+        self.data_entry = User.objects.create_user(username="ap_entry", password="pass12345", role=UserRole.DATA_ENTRY)
+        self.reader = User.objects.create_user(username="ap_reader", password="pass12345", role=UserRole.READER)
+
+        # Set up document type and dossier
+        self.doc_type = DocumentType.objects.create(
+            name="Test Doc",
+            slug="test-doc",
+            group_name="test",
+            display_order=1,
+            is_active=True,
+        )
+        self.dossier = Dossier.objects.create(
+            file_number="AP-001",
+            full_name="Test Dossier",
+            national_id="12345678901",
+            personal_id="PID001",
+            room_number="101",
+            column_number="A",
+            shelf_number="1",
+            created_by=self.data_entry,
+        )
+
+    def test_approved_by_assigned_auditor_is_not_flagged(self):
+        """Document approved by assigned auditor should NOT have is_approved_by_admin=True."""
+        # Link data_entry to auditor
+        self.data_entry.assigned_auditor = self.auditor
+        self.data_entry.save()
+
+        # Create document and approve by the assigned auditor
+        doc = Document.objects.create(
+            dossier=self.dossier,
+            doc_type=self.doc_type,
+            doc_number="AP-001",
+            doc_name="Test Doc 1",
+            file_path="archive/test1.pdf",
+            file_size_kb=100,
+            status=DocumentStatus.APPROVED,
+            created_by=self.data_entry,
+            reviewed_by=self.auditor,  # Approved by assigned auditor
+        )
+
+        # Check serializer field
+        from core.serializers import DocumentSummarySerializer
+        serializer = DocumentSummarySerializer(doc)
+        self.assertFalse(serializer.data["is_approved_by_admin"])
+
+    def test_approved_by_admin_is_flagged_for_auditor_scope(self):
+        """Document approved by admin should have is_approved_by_admin=True when data_entry has assigned auditor."""
+        # Link data_entry to auditor
+        self.data_entry.assigned_auditor = self.auditor
+        self.data_entry.save()
+
+        # Create document and approve by admin (not the assigned auditor)
+        doc = Document.objects.create(
+            dossier=self.dossier,
+            doc_type=self.doc_type,
+            doc_number="AP-002",
+            doc_name="Test Doc 2",
+            file_path="archive/test2.pdf",
+            file_size_kb=100,
+            status=DocumentStatus.APPROVED,
+            created_by=self.data_entry,
+            reviewed_by=self.admin,  # Approved by admin, not assigned auditor
+        )
+
+        # Check serializer field
+        from core.serializers import DocumentSummarySerializer
+        serializer = DocumentSummarySerializer(doc)
+        self.assertTrue(serializer.data["is_approved_by_admin"])
+
+    def test_approved_by_other_auditor_is_not_flagged(self):
+        """Document approved by different auditor (not admin) should NOT have is_approved_by_admin=True."""
+        # Link data_entry to auditor1
+        self.data_entry.assigned_auditor = self.auditor
+        self.data_entry.save()
+
+        # Create document and approve by auditor2 (not the assigned auditor, not admin)
+        doc = Document.objects.create(
+            dossier=self.dossier,
+            doc_type=self.doc_type,
+            doc_number="AP-003",
+            doc_name="Test Doc 3",
+            file_path="archive/test3.pdf",
+            file_size_kb=100,
+            status=DocumentStatus.APPROVED,
+            created_by=self.data_entry,
+            reviewed_by=self.auditor2,  # Approved by different auditor (not admin)
+        )
+
+        # Check serializer field - only admin approval should be flagged
+        from core.serializers import DocumentSummarySerializer
+        serializer = DocumentSummarySerializer(doc)
+        self.assertFalse(serializer.data["is_approved_by_admin"])
+
+    def test_non_approved_document_is_not_flagged(self):
+        """Non-approved documents should have is_approved_by_admin=False."""
+        # Link data_entry to auditor
+        self.data_entry.assigned_auditor = self.auditor
+        self.data_entry.save()
+
+        # Create pending document
+        doc = Document.objects.create(
+            dossier=self.dossier,
+            doc_type=self.doc_type,
+            doc_number="AP-004",
+            doc_name="Test Doc 4",
+            file_path="archive/test4.pdf",
+            file_size_kb=100,
+            status=DocumentStatus.PENDING,
+            created_by=self.data_entry,
+        )
+
+        # Check serializer field
+        from core.serializers import DocumentSummarySerializer
+        serializer = DocumentSummarySerializer(doc)
+        self.assertFalse(serializer.data["is_approved_by_admin"])
+
+    def test_no_assigned_auditor_is_not_flagged(self):
+        """Document without assigned auditor should have is_approved_by_admin=False."""
+        # data_entry has NO assigned auditor
+
+        # Create document and approve by admin
+        doc = Document.objects.create(
+            dossier=self.dossier,
+            doc_type=self.doc_type,
+            doc_number="AP-005",
+            doc_name="Test Doc 5",
+            file_path="archive/test5.pdf",
+            file_size_kb=100,
+            status=DocumentStatus.APPROVED,
+            created_by=self.data_entry,
+            reviewed_by=self.admin,
+        )
+
+        # Check serializer field - no assigned auditor means not in scope
+        from core.serializers import DocumentSummarySerializer
+        serializer = DocumentSummarySerializer(doc)
+        self.assertFalse(serializer.data["is_approved_by_admin"])
+
+    def test_api_includes_indicator_for_auditor(self):
+        """API response includes is_approved_by_admin field when auditor views documents."""
+        # Link data_entry to auditor
+        self.data_entry.assigned_auditor = self.auditor
+        self.data_entry.save()
+
+        # Create admin-approved document
+        doc = Document.objects.create(
+            dossier=self.dossier,
+            doc_type=self.doc_type,
+            doc_number="AP-006",
+            doc_name="Test Doc 6",
+            file_path="archive/test6.pdf",
+            file_size_kb=100,
+            status=DocumentStatus.APPROVED,
+            created_by=self.data_entry,
+            reviewed_by=self.admin,
+        )
+
+        # Auditor views document list
+        self.client.force_authenticate(user=self.auditor)
+        response = self.client.get("/api/documents/")
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+
+        # Find our document in results
+        doc_data = next((d for d in response.data["results"] if d["id"] == doc.id), None)
+        self.assertIsNotNone(doc_data)
+        self.assertIn("is_approved_by_admin", doc_data)
+        self.assertTrue(doc_data["is_approved_by_admin"])
+
+    def test_api_includes_indicator_for_reader(self):
+        """API response includes is_approved_by_admin field when reader views documents."""
+        # Link data_entry to auditor
+        self.data_entry.assigned_auditor = self.auditor
+        self.data_entry.save()
+
+        # Create admin-approved document
+        doc = Document.objects.create(
+            dossier=self.dossier,
+            doc_type=self.doc_type,
+            doc_number="AP-007",
+            doc_name="Test Doc 7",
+            file_path="archive/test7.pdf",
+            file_size_kb=100,
+            status=DocumentStatus.APPROVED,
+            created_by=self.data_entry,
+            reviewed_by=self.admin,
+        )
+
+        # Reader views document list (readers see approved documents)
+        self.client.force_authenticate(user=self.reader)
+        response = self.client.get("/api/documents/")
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+
+        # Find our document in results
+        doc_data = next((d for d in response.data["results"] if d["id"] == doc.id), None)
+        self.assertIsNotNone(doc_data)
+        self.assertIn("is_approved_by_admin", doc_data)
+
+
+class AuditorScopedDocumentVisibilityTests(APITestCase):
+    """
+    Step e1: Auditor scoped document visibility for document listing.
+    Tests that auditor sees only documents from their assigned data_entry users
+    with statuses: pending, rejected, approved (draft excluded).
+    """
+
+    def setUp(self):
+        self.admin = User.objects.create_user(username="aud_vis_admin", password="pass12345", role=UserRole.ADMIN)
+        self.auditor = User.objects.create_user(username="aud_vis_auditor", password="pass12345", role=UserRole.AUDITOR)
+        self.auditor2 = User.objects.create_user(username="aud_vis_auditor2", password="pass12345", role=UserRole.AUDITOR)
+        self.data_entry = User.objects.create_user(username="aud_vis_entry", password="pass12345", role=UserRole.DATA_ENTRY)
+        self.data_entry2 = User.objects.create_user(username="aud_vis_entry2", password="pass12345", role=UserRole.DATA_ENTRY)
+        self.reader = User.objects.create_user(username="aud_vis_reader", password="pass12345", role=UserRole.READER)
+
+        # Set up document type and dossier
+        self.doc_type = DocumentType.objects.create(
+            name="Test Doc",
+            slug="test-doc",
+            group_name="test",
+            display_order=1,
+            is_active=True,
+        )
+        self.dossier = Dossier.objects.create(
+            file_number="AUD-VIS-001",
+            full_name="Test Dossier",
+            national_id="12345678901",
+            personal_id="PID001",
+            room_number="101",
+            column_number="A",
+            shelf_number="1",
+            created_by=self.data_entry,
+        )
+
+    def test_auditor_sees_only_assigned_data_entry_documents(self):
+        """Auditor sees only documents from data_entry users assigned to them."""
+        # Link data_entry to auditor
+        self.data_entry.assigned_auditor = self.auditor
+        self.data_entry.save()
+
+        # data_entry2 is NOT assigned to auditor
+        self.data_entry2.assigned_auditor = self.auditor2
+        self.data_entry2.save()
+
+        # Create document from assigned data_entry (should be visible)
+        doc_assigned = Document.objects.create(
+            dossier=self.dossier,
+            doc_type=self.doc_type,
+            doc_number="AV-001",
+            doc_name="Assigned Doc",
+            file_path="archive/av1.pdf",
+            file_size_kb=100,
+            status=DocumentStatus.PENDING,
+            created_by=self.data_entry,
+        )
+
+        # Create document from non-assigned data_entry (should NOT be visible)
+        doc_other = Document.objects.create(
+            dossier=self.dossier,
+            doc_type=self.doc_type,
+            doc_number="AV-002",
+            doc_name="Other Doc",
+            file_path="archive/av2.pdf",
+            file_size_kb=100,
+            status=DocumentStatus.PENDING,
+            created_by=self.data_entry2,
+        )
+
+        # Auditor views document list
+        self.client.force_authenticate(user=self.auditor)
+        response = self.client.get("/api/documents/")
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+
+        # Should see only 1 document (the one from assigned data_entry)
+        self.assertEqual(response.data["count"], 1)
+        self.assertEqual(response.data["results"][0]["id"], doc_assigned.id)
+
+    def test_auditor_sees_pending_rejected_approved_not_draft(self):
+        """Auditor sees pending, rejected, approved but NOT draft documents."""
+        # Link data_entry to auditor
+        self.data_entry.assigned_auditor = self.auditor
+        self.data_entry.save()
+
+        # Create documents in different statuses
+        doc_draft = Document.objects.create(
+            dossier=self.dossier,
+            doc_type=self.doc_type,
+            doc_number="AV-DRAFT",
+            doc_name="Draft Doc",
+            file_path="archive/draft.pdf",
+            file_size_kb=100,
+            status=DocumentStatus.DRAFT,
+            created_by=self.data_entry,
+        )
+        doc_pending = Document.objects.create(
+            dossier=self.dossier,
+            doc_type=self.doc_type,
+            doc_number="AV-PENDING",
+            doc_name="Pending Doc",
+            file_path="archive/pending.pdf",
+            file_size_kb=100,
+            status=DocumentStatus.PENDING,
+            created_by=self.data_entry,
+        )
+        doc_rejected = Document.objects.create(
+            dossier=self.dossier,
+            doc_type=self.doc_type,
+            doc_number="AV-REJECTED",
+            doc_name="Rejected Doc",
+            file_path="archive/rejected.pdf",
+            file_size_kb=100,
+            status=DocumentStatus.REJECTED,
+            created_by=self.data_entry,
+        )
+        doc_approved = Document.objects.create(
+            dossier=self.dossier,
+            doc_type=self.doc_type,
+            doc_number="AV-APPROVED",
+            doc_name="Approved Doc",
+            file_path="archive/approved.pdf",
+            file_size_kb=100,
+            status=DocumentStatus.APPROVED,
+            created_by=self.data_entry,
+        )
+
+        # Auditor views document list
+        self.client.force_authenticate(user=self.auditor)
+        response = self.client.get("/api/documents/")
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+
+        # Should see 3 documents (pending, rejected, approved) but not draft
+        self.assertEqual(response.data["count"], 3)
+        visible_ids = {d["id"] for d in response.data["results"]}
+        self.assertIn(doc_pending.id, visible_ids)
+        self.assertIn(doc_rejected.id, visible_ids)
+        self.assertIn(doc_approved.id, visible_ids)
+        self.assertNotIn(doc_draft.id, visible_ids)
+
+    def test_auditor_sees_no_documents_without_assignment(self):
+        """Auditor sees no documents if no data_entry users are assigned to them."""
+        # data_entry has NO assigned auditor
+        self.data_entry.assigned_auditor = None
+        self.data_entry.save()
+
+        # Create document
+        Document.objects.create(
+            dossier=self.dossier,
+            doc_type=self.doc_type,
+            doc_number="AV-NO-ASSIGN",
+            doc_name="No Assign Doc",
+            file_path="archive/noassign.pdf",
+            file_size_kb=100,
+            status=DocumentStatus.PENDING,
+            created_by=self.data_entry,
+        )
+
+        # Auditor views document list
+        self.client.force_authenticate(user=self.auditor)
+        response = self.client.get("/api/documents/")
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+
+        # Should see 0 documents (no assigned data_entry users)
+        self.assertEqual(response.data["count"], 0)
+
+    def test_deleted_documents_also_follow_auditor_scope(self):
+        """Auditor sees deleted documents only from their assigned data_entry users."""
+        # Link data_entry to auditor
+        self.data_entry.assigned_auditor = self.auditor
+        self.data_entry.save()
+
+        # Create deleted document from assigned data_entry
+        doc_deleted = Document.objects.create(
+            dossier=self.dossier,
+            doc_type=self.doc_type,
+            doc_number="AV-DEL",
+            doc_name="Deleted Doc",
+            file_path="archive/deleted.pdf",
+            file_size_kb=100,
+            status=DocumentStatus.APPROVED,
+            created_by=self.data_entry,
+            is_deleted=True,
+        )
+
+        # Create deleted document from other data_entry (not assigned to this auditor)
+        self.data_entry2.assigned_auditor = self.auditor2
+        self.data_entry2.save()
+        doc_other_deleted = Document.objects.create(
+            dossier=self.dossier,
+            doc_type=self.doc_type,
+            doc_number="AV-DEL-OTHER",
+            doc_name="Other Deleted Doc",
+            file_path="archive/deleted_other.pdf",
+            file_size_kb=100,
+            status=DocumentStatus.APPROVED,
+            created_by=self.data_entry2,
+            is_deleted=True,
+        )
+
+        # Auditor views deleted document list
+        self.client.force_authenticate(user=self.auditor)
+        response = self.client.get("/api/documents/?is_deleted=true")
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+
+        # Should see only 1 deleted document (from assigned data_entry)
+        self.assertEqual(response.data["count"], 1)
+        self.assertEqual(response.data["results"][0]["id"], doc_deleted.id)

@@ -71,13 +71,23 @@ class DocumentWorkflowPermission(BasePermission):
 
 
 class AuditLogPermission(BasePermission):
-    """Read-only audit log access for admin and auditor."""
+    """Read-only audit log access for admin only."""
 
     def has_permission(self, request, view):
         user = request.user
         if not user or not user.is_authenticated:
             return False
         if request.method not in SAFE_METHODS:
+            return False
+        return user.role == UserRole.ADMIN
+
+
+class AdminOnlyPermission(BasePermission):
+    """Full access for admin users only."""
+
+    def has_permission(self, request, view):
+        user = request.user
+        if not user or not user.is_authenticated:
             return False
         return user.role == UserRole.ADMIN
 
