@@ -1,99 +1,138 @@
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useParams } from "react-router-dom";
 import { getAuditLogById } from "../api/auditLogsApi";
 import { AlertMessage } from "../components/AlertMessage";
 import { PageHeader } from "../components/PageHeader";
 import { EmptyBlock, LoadingBlock } from "../components/StateBlock";
+import {
+  AUDIT_ACTION_LABELS,
+  getAuditActionLabel,
+  getAuditActorPrimary,
+  getAuditActorSecondary,
+  getAuditChangeEntries,
+  getAuditDisplaySummary,
+  getAuditEventTitle,
+  getAuditRoleLabel,
+  getAuditNarratives,
+  normalizeAuditValue,
+} from "../utils/auditLogPresentation";
 import { formatDate } from "../utils/format";
 
-const ACTION_LABELS = {
-  create: "إنشاء",
-  update: "تحديث",
-  submit: "تقديم",
-  approve: "موافقة",
-  reject: "رفض",
-  delete: "حذف",
-  restore: "استعادة",
+const ACTION_BADGE_STYLES = {
+  create: { background: "#e8f8ee", color: "#166534", border: "#b8e2c7" },
+  update: { background: "#f0f9ff", color: "#075985", border: "#bae6fd" },
+  submit: { background: "#fef3c7", color: "#92400e", border: "#fcd34d" },
+  approve: { background: "#dcfce7", color: "#166534", border: "#86efac" },
+  reject: { background: "#ffe4e6", color: "#be123c", border: "#fda4af" },
+  replace_file: { background: "#eef2ff", color: "#3730a3", border: "#c7d2fe" },
+  delete: { background: "#f3f4f6", color: "#374151", border: "#d1d5db" },
+  restore: { background: "#f5f3ff", color: "#5b21b6", border: "#c4b5fd" },
 };
 
-const ENTITY_LABELS = {
-  document: "وثيقة",
-  dossier: "إضبارة",
-  user: "مستخدم",
+const CHANGE_TYPE_LABELS = {
+  changed: "تغيير",
+  added: "إضافة",
+  removed: "إزالة",
 };
 
-const FIELD_LABELS = {
-  status: "الحالة",
-  submitted_at: "تاريخ التقديم",
-  reviewed_at: "تاريخ المراجعة",
-  reviewed_by: "تمت المراجعة بواسطة",
-  rejection_reason: "سبب الرفض",
-  doc_name: "اسم الوثيقة",
-  doc_number: "رقم الوثيقة",
-  file_path: "مسار الملف",
-  mime_type: "نوع الملف",
-  file_size_kb: "حجم الملف",
-  created_by: "أنشأ بواسطة",
-  dossier: "الإضبارة",
-  doc_type: "نوع الوثيقة",
-  is_deleted: "محذوف",
-  deleted_at: "تاريخ الحذف",
-  deleted_by: "تم الحذف بواسطة",
-  updated_at: "تاريخ التحديث",
-};
+function ActionBadge({ action, label }) {
+  const style = ACTION_BADGE_STYLES[action] || ACTION_BADGE_STYLES.update;
+  const displayLabel = label || AUDIT_ACTION_LABELS[action] || action;
 
-const STATUS_LABELS = {
-  draft: "مسودة",
-  pending: "معلقة",
-  approved: "معتمدة",
-  rejected: "مرفوضة",
-};
-
-function formatFieldValue(key, value) {
-  if (value === null || value === undefined || value === "") {
-    return "—";
-  }
-
-  if (typeof value === "boolean") {
-    return value ? "نعم" : "لا";
-  }
-
-  // Format status values
-  if (key === "status" && STATUS_LABELS[value]) {
-    return STATUS_LABELS[value];
-  }
-
-  // Format timestamps (ISO strings)
-  if (typeof value === "string" && value.match(/^\d{4}-\d{2}-\d{2}T/)) {
-    return formatDate(value);
-  }
-
-  // Format objects/arrays
-  if (typeof value === "object") {
-    return JSON.stringify(value);
-  }
-
-  return String(value);
+  return (
+    <span
+      style={{
+        display: "inline-block",
+        padding: "0.25rem 0.5rem",
+        borderRadius: "999px",
+        fontSize: "0.82rem",
+        fontWeight: 700,
+        background: style.background,
+        color: style.color,
+        border: `1px solid ${style.border}`,
+      }}
+    >
+      {displayLabel}
+    </span>
+  );
 }
 
-function getFieldLabel(key) {
-  return FIELD_LABELS[key] || key;
+function AuditValueContent({ value }) {
+  if (!value) {
+    return <span className="audit-log-value-empty">—</span>;
+  }
+
+  if (value.kind === "text") {
+    return <div className="audit-log-value-text">{value.text}</div>;
+  }
+
+  if (value.kind === "empty") {
+    return <span className="audit-log-value-empty">{value.text}</span>;
+  }
+
+  if (value.kind === "list") {
+    return (
+      <div className="audit-log-value-list">
+        {value.items.map((item) => (
+          <div key={item.id} className="audit-log-value-list__item">
+            {item.label ? <strong>{item.label}</strong> : null}
+            <AuditValueContent value={item.value} />
+          </div>
+        ))}
+      </div>
+    );
+  }
+
+  if (value.kind === "pairs") {
+    return (
+      <dl className="audit-log-value-pairs">
+        {value.items.map((item) => (
+          <div key={item.key} className="audit-log-value-pair">
+            <dt>{item.label}</dt>
+            <dd>
+              <AuditValueContent value={item.value} />
+            </dd>
+          </div>
+        ))}
+      </dl>
+    );
+  }
+
+  return <div className="audit-log-value-text">—</div>;
 }
 
-function getEventDescription(action, entityType) {
-  const entityLabel = ENTITY_LABELS[entityType] || entityType;
+function DetailFact({ label, value, subtext }) {
+  return (
+    <div className="audit-log-fact">
+      <span className="audit-log-fact__label">{label}</span>
+      <strong className="audit-log-fact__value">{value || "—"}</strong>
+      {subtext ? <span className="audit-log-fact__meta">{subtext}</span> : null}
+    </div>
+  );
+}
 
-  const eventDescriptions = {
-    create: `تم إنشاء ${entityLabel}`,
-    update: `تم تحديث ${entityLabel}`,
-    submit: `تم تقديم ${entityLabel}`,
-    approve: `تمت الموافقة على ${entityLabel}`,
-    reject: `تم رفض ${entityLabel}`,
-    delete: `تم حذف ${entityLabel}`,
-    restore: `تم استعادة ${entityLabel}`,
-  };
+function ChangeCard({ entry }) {
+  return (
+    <article className={`audit-log-change-card audit-log-change-card--${entry.changeType}`}>
+      <div className="audit-log-change-card__title">
+        <h4>{entry.label}</h4>
+        <span className={`audit-log-change-card__badge audit-log-change-card__badge--${entry.changeType}`}>
+          {CHANGE_TYPE_LABELS[entry.changeType] || "تغيير"}
+        </span>
+      </div>
 
-  return eventDescriptions[action] || `${ACTION_LABELS[action] || action} ${entityLabel}`;
+      <div className="audit-log-change-card__grid">
+        <div className="audit-log-value-panel">
+          <span className="audit-log-value-panel__label">قبل</span>
+          <AuditValueContent value={entry.before} />
+        </div>
+        <div className="audit-log-value-panel audit-log-value-panel--after">
+          <span className="audit-log-value-panel__label">بعد</span>
+          <AuditValueContent value={entry.after} />
+        </div>
+      </div>
+    </article>
+  );
 }
 
 export function AuditLogDetailPage() {
@@ -115,6 +154,62 @@ export function AuditLogDetailPage() {
       .finally(() => setIsLoading(false));
   }, [id]);
 
+  const changes = useMemo(() => getAuditChangeEntries(log), [log]);
+  const narratives = useMemo(() => getAuditNarratives(log), [log]);
+  const eventTitle = useMemo(() => getAuditEventTitle(log), [log]);
+  const eventSummary = useMemo(() => getAuditDisplaySummary(log), [log]);
+
+  const overviewFacts = useMemo(() => {
+    if (!log) {
+      return [];
+    }
+
+    return [
+      {
+        label: "المنفذ",
+        value: getAuditActorPrimary(log),
+        subtext: getAuditActorSecondary(log) || getAuditRoleLabel(log.actor?.role),
+      },
+      {
+        label: "النوع",
+        value: log.entity_label || "—",
+        subtext: log.entity_type || "",
+      },
+      {
+        label: "المرجع المرتبط",
+        value: log.entity_display || log.entity_label || "—",
+        subtext: log.entity_reference && log.entity_reference !== log.entity_display ? log.entity_reference : "",
+      },
+      {
+        label: "وقت العملية",
+        value: formatDate(log.created_at),
+        subtext: `رقم السجل: ${log.id}`,
+      },
+    ];
+  }, [log]);
+
+  const supportingFacts = useMemo(() => {
+    if (!log) {
+      return [];
+    }
+
+    const items = [];
+
+    if (log.ip_address) {
+      items.push({ label: "عنوان الشبكة", value: log.ip_address });
+    }
+
+    if (log.actor?.username && getAuditActorPrimary(log) !== log.actor.username) {
+      items.push({ label: "اسم المستخدم", value: log.actor.username });
+    }
+
+    if (log.actor?.role) {
+      items.push({ label: "دور المنفذ", value: getAuditRoleLabel(log.actor.role) });
+    }
+
+    return items;
+  }, [log]);
+
   if (isLoading) {
     return <LoadingBlock />;
   }
@@ -127,83 +222,94 @@ export function AuditLogDetailPage() {
     return <EmptyBlock message="السجل غير موجود." />;
   }
 
-  const eventTitle = getEventDescription(log.action, log.entity_type);
-  const entityLabel = ENTITY_LABELS[log.entity_type] || log.entity_type;
-
-  const oldValues = log.old_values || {};
-  const newValues = log.new_values || {};
-
-  const allKeys = Array.from(new Set([...Object.keys(oldValues), ...Object.keys(newValues)]))
-    .filter(key => key !== "rejection_reason" || log.action === "reject");
-
   return (
     <section>
-      <PageHeader title="تفاصيل سجل التدقيق" subtitle="عرض واضح ومفهوم لتفاصيل العملية والتغييرات" />
+      <PageHeader
+        title="تفاصيل سجل التدقيق"
+        subtitle="عرض منظم وواضح يبيّن من نفّذ العملية، وعلى ماذا تمت، وما الذي تغيّر بالضبط."
+      />
 
-      {/* Event Summary Card */}
-      <div className="card">
-        <div className="event-header">{eventTitle}</div>
+      <div className="card audit-log-hero">
+        <div className="audit-log-hero__top">
+          <ActionBadge action={log.action} label={log.action_label || getAuditActionLabel(log.action)} />
+          <span className="audit-log-hero__entity">{log.entity_label || "—"}</span>
+        </div>
+        <h3 className="audit-log-hero__title">{eventTitle}</h3>
+        <p className="audit-log-hero__summary">{eventSummary}</p>
 
-        <div className="event-details-grid">
-          <div className="event-detail-row">
-            <span className="detail-label">الفاعل:</span>
-            <span className="detail-value">{log.actor?.username || "غير معروف"}</span>
-          </div>
-          <div className="event-detail-row">
-            <span className="detail-label">الدور:</span>
-            <span className="detail-value">{log.actor?.role || "—"}</span>
-          </div>
-          {log.entity_type === "document" && log.entity_reference && (
-            <div className="event-detail-row">
-              <span className="detail-label">نوع الوثيقة:</span>
-              <span className="detail-value">{log.entity_reference}</span>
-            </div>
-          )}
-          <div className="event-detail-row">
-            <span className="detail-label">التاريخ:</span>
-            <span className="detail-value">{formatDate(log.created_at)}</span>
-          </div>
-          {log.ip_address && (
-            <div className="event-detail-row">
-              <span className="detail-label">عنوان IP:</span>
-              <span className="detail-value">{log.ip_address}</span>
-            </div>
-          )}
+        <div className="audit-log-facts">
+          {overviewFacts.map((fact) => (
+            <DetailFact key={fact.label} label={fact.label} value={fact.value} subtext={fact.subtext} />
+          ))}
         </div>
       </div>
 
-      {/* Changes Card */}
-      {allKeys.length > 0 && (
-        <div className="card">
-          <div className="changes-header">التغييرات</div>
-          <div className="changes-table">
-            <div className="changes-row changes-header-row">
-              <div className="changes-cell changes-field-header">الحقل</div>
-              <div className="changes-cell changes-old-header">قبل</div>
-              <div className="changes-cell changes-new-header">بعد</div>
+      {narratives.length ? (
+        <div className="audit-log-note-grid">
+          {narratives.map((item) => (
+            <div
+              key={item.key}
+              className={`card audit-log-note audit-log-note--${item.tone === "attention" ? "attention" : "neutral"}`}
+            >
+              <h3>{item.title}</h3>
+              <p>{item.body}</p>
             </div>
-            {allKeys.map((key) => {
-              const oldVal = formatFieldValue(key, oldValues[key]);
-              const newVal = formatFieldValue(key, newValues[key]);
-              const hasChanged = oldVal !== newVal;
-
-              return (
-                <div key={key} className={`changes-row ${hasChanged ? "has-changed" : ""}`}>
-                  <div className="changes-cell changes-field">{getFieldLabel(key)}</div>
-                  <div className="changes-cell changes-old">{oldVal}</div>
-                  <div className="changes-cell changes-new">{newVal}</div>
-                </div>
-              );
-            })}
-          </div>
+          ))}
         </div>
-      )}
+      ) : null}
 
-      {!allKeys.length && (
+      <div className="audit-log-detail-grid">
         <div className="card">
-          <p className="no-changes">لا توجد تفاصيل تغيير متاحة لهذا السجل.</p>
+          <div className="audit-log-section__header">
+            <h3>التغييرات المسجلة</h3>
+            {changes.length ? <span className="muted">{changes.length} حقول متغيرة</span> : null}
+          </div>
+
+          {changes.length ? (
+            <div className="audit-log-change-list">
+              {changes.map((entry) => (
+                <ChangeCard key={entry.key} entry={entry} />
+              ))}
+            </div>
+          ) : (
+            <div className="audit-log-empty-state">
+              لا توجد حقول متغيرة معروضة لهذا الحدث. قد تكون العملية عبارة عن تسجيل إجراء أو ملاحظة بدون تغيير مباشر في القيم.
+            </div>
+          )}
         </div>
-      )}
+
+        {supportingFacts.length ? (
+          <div className="card">
+            <div className="audit-log-section__header">
+              <h3>تفاصيل إضافية</h3>
+            </div>
+            <div className="audit-log-supporting-grid">
+              {supportingFacts.map((fact) => (
+                <DetailFact key={fact.label} label={fact.label} value={fact.value} />
+              ))}
+            </div>
+          </div>
+        ) : null}
+
+        {!changes.length && (log.old_values || log.new_values) ? (
+          <div className="card">
+            <div className="audit-log-section__header">
+              <h3>القيم المسجلة</h3>
+              <span className="muted">عرض مرن بحسب البيانات المتاحة</span>
+            </div>
+            <div className="audit-log-change-card__grid">
+              <div className="audit-log-value-panel">
+                <span className="audit-log-value-panel__label">القيم السابقة</span>
+                <AuditValueContent value={normalizeAuditValue("old_values", log.old_values)} />
+              </div>
+              <div className="audit-log-value-panel audit-log-value-panel--after">
+                <span className="audit-log-value-panel__label">القيم الحالية</span>
+                <AuditValueContent value={normalizeAuditValue("new_values", log.new_values)} />
+              </div>
+            </div>
+          </div>
+        ) : null}
+      </div>
     </section>
   );
 }

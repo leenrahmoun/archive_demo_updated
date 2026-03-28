@@ -169,24 +169,83 @@ class DocumentRejectSerializer(serializers.Serializer):
     rejection_reason = serializers.CharField(max_length=2000)
 
 
+AUDIT_ACTION_LABELS = {
+    AuditAction.CREATE: "إنشاء",
+    AuditAction.UPDATE: "تحديث",
+    AuditAction.SUBMIT: "تقديم",
+    AuditAction.APPROVE: "موافقة",
+    AuditAction.REJECT: "رفض",
+    AuditAction.REPLACE_FILE: "استبدال الملف",
+    AuditAction.DELETE: "حذف",
+    AuditAction.RESTORE: "استعادة",
+}
+AUDIT_ENTITY_LABELS = {
+    "document": "وثيقة",
+    "dossier": "إضبارة",
+    "user": "مستخدم",
+}
+AUDIT_CHANGE_FIELD_LABELS = {
+    "status": "الحالة",
+    "doc_name": "اسم الوثيقة",
+    "doc_number": "رقم الوثيقة",
+    "file_number": "رقم الإضبارة",
+    "full_name": "الاسم",
+    "role": "الدور",
+    "rejection_reason": "سبب الرفض",
+}
+
+
+def get_user_full_name(user):
+    full_name = f"{user.first_name or ''} {user.last_name or ''}".strip()
+    return full_name or None
+
+
+def get_user_display_name(user):
+    return get_user_full_name(user) or user.username
+
+
+def join_human_parts(*parts):
+    clean_parts = [str(part).strip() for part in parts if part is not None and str(part).strip()]
+    if not clean_parts:
+        return None
+    return " - ".join(clean_parts)
+
+
 class AuditActorSerializer(serializers.ModelSerializer):
+    full_name = serializers.SerializerMethodField()
+    display_name = serializers.SerializerMethodField()
+
     class Meta:
         model = User
-        fields = ("id", "username", "role")
+        fields = ("id", "username", "role", "full_name", "display_name")
+
+    def get_full_name(self, obj):
+        return get_user_full_name(obj)
+
+    def get_display_name(self, obj):
+        return get_user_display_name(obj)
 
 
 class AuditLogSerializer(serializers.ModelSerializer):
     actor = AuditActorSerializer(source="user", read_only=True)
+    action_label = serializers.SerializerMethodField()
+    entity_label = serializers.SerializerMethodField()
+    entity_display = serializers.SerializerMethodField()
     entity_reference = serializers.SerializerMethodField()
+    change_summary = serializers.SerializerMethodField()
 
     class Meta:
         model = AuditLog
         fields = (
             "id",
             "action",
+            "action_label",
             "entity_type",
+            "entity_label",
             "entity_id",
+            "entity_display",
             "entity_reference",
+            "change_summary",
             "old_values",
             "new_values",
             "ip_address",
@@ -194,27 +253,106 @@ class AuditLogSerializer(serializers.ModelSerializer):
             "actor",
         )
 
-    def get_entity_reference(self, obj):
-        """Return human-readable reference for the entity if available."""
+    def get_action_label(self, obj):
+        return getattr(obj, "action_label_value", None) or AUDIT_ACTION_LABELS.get(obj.action, obj.action)
+
+    def get_entity_label(self, obj):
+        return getattr(obj, "entity_label_value", None) or AUDIT_ENTITY_LABELS.get(obj.entity_type, obj.entity_type)
+
+    def get_entity_display(self, obj):
+        annotated_display = getattr(obj, "entity_display_value", None)
+        if annotated_display:
+            cleaned = annotated_display.strip()
+            if cleaned:
+                return cleaned
+
         try:
             if obj.entity_type == "document":
-                from core.models import Document
-                doc = Document.objects.filter(id=obj.entity_id).select_related("doc_type").values("doc_number", "doc_name", "doc_type__name").first()
-                if doc:
-                    return doc["doc_type__name"] if doc["doc_type__name"] else None
+                document = (
+                    Document.objects.filter(id=obj.entity_id)
+                    .select_related("dossier")
+                    .values("doc_name", "doc_number", "dossier__file_number")
+                    .first()
+                )
+                if document:
+                    return join_human_parts(
+                        document["doc_name"],
+                        document["doc_number"],
+                        document["dossier__file_number"],
+                    )
             elif obj.entity_type == "dossier":
-                from core.models import Dossier
+                dossier = Dossier.objects.filter(id=obj.entity_id).values("full_name", "file_number").first()
+                if dossier:
+                    return join_human_parts(dossier["full_name"], dossier["file_number"])
+            elif obj.entity_type == "user":
+                entity_user = User.objects.filter(id=obj.entity_id).first()
+                if entity_user:
+                    return join_human_parts(get_user_full_name(entity_user), entity_user.username)
+        except Exception:
+            return None
+
+        return None
+
+    def get_entity_reference(self, obj):
+        """Backward-compatible short reference used by the detail page."""
+        try:
+            if obj.entity_type == "document":
+                doc = (
+                    Document.objects.filter(id=obj.entity_id)
+                    .select_related("doc_type")
+                    .values("doc_type__name", "doc_number")
+                    .first()
+                )
+                if doc:
+                    return join_human_parts(doc["doc_type__name"], doc["doc_number"])
+            elif obj.entity_type == "dossier":
                 dossier = Dossier.objects.filter(id=obj.entity_id).values("file_number").first()
                 if dossier:
                     return dossier["file_number"]
             elif obj.entity_type == "user":
-                from core.models import User
                 user = User.objects.filter(id=obj.entity_id).values("username").first()
                 if user:
                     return user["username"]
         except Exception:
             pass
         return None
+
+    def get_change_summary(self, obj):
+        action_label = self.get_action_label(obj)
+        entity_label = self.get_entity_label(obj)
+        entity_display = self.get_entity_display(obj)
+        old_values = obj.old_values or {}
+        new_values = obj.new_values or {}
+
+        summary_parts = [f"{action_label} {entity_label}"]
+        if entity_display:
+            summary_parts.append(entity_display)
+
+        message = new_values.get("message") or old_values.get("message")
+        if isinstance(message, str) and message.strip():
+            summary_parts.append(message.strip())
+            return " - ".join(summary_parts)
+
+        rejection_reason = new_values.get("rejection_reason") or old_values.get("rejection_reason")
+        if isinstance(rejection_reason, str) and rejection_reason.strip():
+            summary_parts.append(rejection_reason.strip())
+            return " - ".join(summary_parts)
+
+        new_status = new_values.get("status")
+        old_status = old_values.get("status")
+        if new_status and new_status != old_status:
+            summary_parts.append(f"الحالة: {new_status}")
+            return " - ".join(summary_parts)
+
+        changed_fields = [
+            AUDIT_CHANGE_FIELD_LABELS.get(key, key)
+            for key in new_values.keys()
+            if old_values.get(key) != new_values.get(key)
+        ]
+        if changed_fields:
+            summary_parts.append(f"تم تحديث {', '.join(changed_fields[:3])}")
+
+        return " - ".join(summary_parts)
 
 
 class DocumentSummarySerializer(serializers.ModelSerializer):

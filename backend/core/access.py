@@ -1,6 +1,9 @@
-from django.db.models import Q
+from django.db.models import Case, CharField, F, OuterRef, Q, Subquery, Value, When
+from django.db.models.functions import Cast, Coalesce, Concat, Trim
+from django.utils import timezone
+from django.utils.dateparse import parse_date, parse_datetime
 
-from core.models import Document, DocumentStatus, Dossier, UserRole
+from core.models import AuditAction, AuditLog, Document, DocumentStatus, Dossier, User, UserRole
 
 
 AUDITOR_VISIBLE_DOCUMENT_STATUSES = (
@@ -17,6 +20,21 @@ FULL_DOCUMENT_STATUS_SET = {
 }
 BOOLEAN_TRUE_VALUES = {"true", "1"}
 BOOLEAN_FALSE_VALUES = {"false", "0"}
+AUDIT_ACTION_LABELS = {
+    AuditAction.CREATE: "إنشاء",
+    AuditAction.UPDATE: "تحديث",
+    AuditAction.SUBMIT: "تقديم",
+    AuditAction.APPROVE: "موافقة",
+    AuditAction.REJECT: "رفض",
+    AuditAction.REPLACE_FILE: "استبدال الملف",
+    AuditAction.DELETE: "حذف",
+    AuditAction.RESTORE: "استعادة",
+}
+AUDIT_ENTITY_LABELS = {
+    "document": "وثيقة",
+    "dossier": "إضبارة",
+    "user": "مستخدم",
+}
 
 
 def _get_clean_param(params, key):
@@ -45,6 +63,158 @@ def get_allowed_status_filters_for_user(user):
     if user.role == UserRole.READER:
         return set(READER_VISIBLE_DOCUMENT_STATUSES)
     return set()
+
+
+def get_audit_log_visibility_queryset(user):
+    if not user or not user.is_authenticated:
+        return AuditLog.objects.none()
+    if user.role == UserRole.ADMIN:
+        return AuditLog.objects.select_related("user").all()
+    return AuditLog.objects.none()
+
+
+def annotate_audit_log_human_fields(queryset):
+    document_reference = Document.objects.filter(pk=OuterRef("entity_id")).annotate(
+        reference=Trim(
+            Concat(
+                Coalesce("doc_name", Value("")),
+                Value(" "),
+                Coalesce("doc_number", Value("")),
+                Value(" "),
+                Coalesce("dossier__file_number", Value("")),
+            )
+        )
+    ).values("reference")[:1]
+    dossier_reference = Dossier.objects.filter(pk=OuterRef("entity_id")).annotate(
+        reference=Trim(
+            Concat(
+                Coalesce("full_name", Value("")),
+                Value(" "),
+                Coalesce("file_number", Value("")),
+            )
+        )
+    ).values("reference")[:1]
+    user_reference = User.objects.filter(pk=OuterRef("entity_id")).annotate(
+        reference=Trim(
+            Concat(
+                Coalesce("first_name", Value("")),
+                Value(" "),
+                Coalesce("last_name", Value("")),
+                Value(" "),
+                Coalesce("username", Value("")),
+            )
+        )
+    ).values("reference")[:1]
+
+    queryset = queryset.annotate(
+        actor_full_name=Trim(
+            Concat(
+                Coalesce("user__first_name", Value("")),
+                Value(" "),
+                Coalesce("user__last_name", Value("")),
+            )
+        ),
+        old_values_text=Coalesce(Cast("old_values", output_field=CharField()), Value("")),
+        new_values_text=Coalesce(Cast("new_values", output_field=CharField()), Value("")),
+    )
+    queryset = queryset.annotate(
+        actor_display_name_value=Case(
+            When(actor_full_name="", then=F("user__username")),
+            default=F("actor_full_name"),
+            output_field=CharField(),
+        ),
+        action_label_value=Case(
+            *[When(action=action, then=Value(label)) for action, label in AUDIT_ACTION_LABELS.items()],
+            default=F("action"),
+            output_field=CharField(),
+        ),
+        entity_label_value=Case(
+            *[When(entity_type=entity_type, then=Value(label)) for entity_type, label in AUDIT_ENTITY_LABELS.items()],
+            default=F("entity_type"),
+            output_field=CharField(),
+        ),
+        entity_display_value=Case(
+            When(entity_type="document", then=Coalesce(Subquery(document_reference), Value(""))),
+            When(entity_type="dossier", then=Coalesce(Subquery(dossier_reference), Value(""))),
+            When(entity_type="user", then=Coalesce(Subquery(user_reference), Value(""))),
+            default=Value(""),
+            output_field=CharField(),
+        ),
+    )
+    return queryset.annotate(
+        search_summary_value=Trim(
+            Concat(
+                Coalesce("user__username", Value("")),
+                Value(" "),
+                Coalesce(F("actor_full_name"), Value("")),
+                Value(" "),
+                Coalesce(F("action_label_value"), Value("")),
+                Value(" "),
+                Coalesce(F("entity_label_value"), Value("")),
+                Value(" "),
+                Coalesce(F("entity_display_value"), Value("")),
+                Value(" "),
+                Coalesce(F("old_values_text"), Value("")),
+                Value(" "),
+                Coalesce(F("new_values_text"), Value("")),
+            )
+        )
+    )
+
+
+def apply_audit_log_filters(queryset, params):
+    if params is None:
+        return queryset
+
+    action = _get_clean_param(params, "action")
+    if action:
+        allowed_actions = {choice for choice, _ in AuditAction.choices}
+        if action not in allowed_actions:
+            return queryset.none()
+        queryset = queryset.filter(action=action)
+
+    date_from = _get_clean_param(params, "date_from")
+    if date_from:
+        parsed = parse_datetime(date_from)
+        if parsed is None:
+            parsed_date = parse_date(date_from)
+            if parsed_date is not None:
+                queryset = queryset.filter(created_at__date__gte=parsed_date)
+        else:
+            if timezone.is_naive(parsed):
+                parsed = timezone.make_aware(parsed, timezone.get_current_timezone())
+            queryset = queryset.filter(created_at__gte=parsed)
+
+    date_to = _get_clean_param(params, "date_to")
+    if date_to:
+        parsed = parse_datetime(date_to)
+        if parsed is None:
+            parsed_date = parse_date(date_to)
+            if parsed_date is not None:
+                queryset = queryset.filter(created_at__date__lte=parsed_date)
+        else:
+            if timezone.is_naive(parsed):
+                parsed = timezone.make_aware(parsed, timezone.get_current_timezone())
+            queryset = queryset.filter(created_at__lte=parsed)
+
+    return queryset
+
+
+def apply_audit_log_search(queryset, params):
+    search = _get_clean_param(params, "search")
+    if not search:
+        return queryset
+
+    return queryset.filter(
+        Q(user__username__icontains=search)
+        | Q(actor_full_name__icontains=search)
+        | Q(actor_display_name_value__icontains=search)
+        | Q(action__icontains=search)
+        | Q(action_label_value__icontains=search)
+        | Q(entity_label_value__icontains=search)
+        | Q(entity_display_value__icontains=search)
+        | Q(search_summary_value__icontains=search)
+    )
 
 
 def get_document_visibility_queryset(user):
@@ -122,10 +292,7 @@ def apply_document_advanced_filters(queryset, params, user):
 
     dossier = _get_clean_param(params, "dossier")
     if dossier:
-        if dossier.isdigit():
-            queryset = queryset.filter(dossier_id=int(dossier))
-        else:
-            queryset = queryset.filter(dossier__file_number__icontains=dossier)
+        queryset = queryset.filter(dossier__file_number__icontains=dossier)
 
     created_by = _get_clean_param(params, "created_by")
     if created_by:

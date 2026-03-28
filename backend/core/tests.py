@@ -350,33 +350,80 @@ class DocumentWorkflowApiTests(APITestCase):
 
 class AuditLogApiTests(APITestCase):
     def setUp(self):
-        self.admin = User.objects.create_user(username="admin_audit", password="pass12345", role=UserRole.ADMIN)
-        self.auditor = User.objects.create_user(username="auditor_audit", password="pass12345", role=UserRole.AUDITOR)
-        self.data_entry = User.objects.create_user(username="entry_audit", password="pass12345", role=UserRole.DATA_ENTRY)
+        self.admin = User.objects.create_user(
+            username="admin_audit",
+            password="pass12345",
+            role=UserRole.ADMIN,
+            first_name="System",
+            last_name="Admin",
+        )
+        self.auditor = User.objects.create_user(
+            username="auditor_audit",
+            password="pass12345",
+            role=UserRole.AUDITOR,
+            first_name="Audit",
+            last_name="Reviewer",
+        )
+        self.data_entry = User.objects.create_user(
+            username="entry_audit",
+            password="pass12345",
+            role=UserRole.DATA_ENTRY,
+            first_name="Data",
+            last_name="Entry",
+        )
         self.reader = User.objects.create_user(username="reader_audit", password="pass12345", role=UserRole.READER)
+        self.doc_type = DocumentType.objects.create(
+            name="Audit Test Type",
+            slug="audit-test-type",
+            group_name="audit",
+            display_order=1,
+            is_active=True,
+        )
+        self.dossier = Dossier.objects.create(
+            file_number="AUD-100",
+            full_name="Audit Dossier",
+            national_id="AUD-N-100",
+            personal_id="AUD-P-100",
+            room_number="1",
+            column_number="1",
+            shelf_number="1",
+            created_by=self.data_entry,
+        )
+        self.document = Document.objects.create(
+            dossier=self.dossier,
+            doc_type=self.doc_type,
+            doc_number="AUD-DOC-1",
+            doc_name="Family Statement",
+            file_path="archive/audit-family-statement.pdf",
+            file_size_kb=120,
+            mime_type="application/pdf",
+            status=DocumentStatus.APPROVED,
+            created_by=self.data_entry,
+            reviewed_by=self.auditor,
+        )
 
         self.log1 = AuditLog.objects.create(
             user=self.admin,
             action=AuditAction.CREATE,
             entity_type="dossier",
-            entity_id=10,
-            new_values={"status": "created"},
+            entity_id=self.dossier.id,
+            new_values={"status": "created", "message": "Created audit dossier"},
         )
         self.log2 = AuditLog.objects.create(
             user=self.auditor,
             action=AuditAction.APPROVE,
             entity_type="document",
-            entity_id=20,
+            entity_id=self.document.id,
             old_values={"status": "pending"},
-            new_values={"status": "approved"},
+            new_values={"status": "approved", "message": "Approved family statement"},
         )
         self.log3 = AuditLog.objects.create(
             user=self.admin,
-            action=AuditAction.REJECT,
-            entity_type="document",
-            entity_id=21,
-            old_values={"status": "pending"},
-            new_values={"status": "rejected"},
+            action=AuditAction.UPDATE,
+            entity_type="user",
+            entity_id=self.data_entry.id,
+            old_values={"role": "data_entry"},
+            new_values={"role": "data_entry", "message": "Updated user profile"},
         )
 
         now = timezone.now()
@@ -410,34 +457,85 @@ class AuditLogApiTests(APITestCase):
         self.assertEqual(response.data["count"], 3)
         # newest first
         self.assertEqual(response.data["results"][0]["id"], self.log3.id)
+        approve_row = next(item for item in response.data["results"] if item["id"] == self.log2.id)
+        self.assertEqual(approve_row["actor"]["display_name"], "Audit Reviewer")
+        self.assertIn("Family Statement", approve_row["entity_display"])
+        self.assertIn("Approved family statement", approve_row["change_summary"])
 
-    def test_audit_logs_filters(self):
+    def test_audit_logs_useful_search_filters(self):
         self.client.force_authenticate(user=self.admin)
 
-        by_action = self.client.get("/api/audit-logs/?action=approve")
-        self.assertEqual(by_action.status_code, status.HTTP_200_OK)
-        self.assertEqual(by_action.data["count"], 1)
+        by_username = self.client.get("/api/audit-logs/?search=auditor_audit")
+        self.assertEqual(by_username.status_code, status.HTTP_200_OK)
+        self.assertEqual(by_username.data["count"], 1)
+        self.assertEqual(by_username.data["results"][0]["id"], self.log2.id)
 
-        by_actor = self.client.get(f"/api/audit-logs/?actor={self.auditor.id}")
-        self.assertEqual(by_actor.status_code, status.HTTP_200_OK)
-        self.assertEqual(by_actor.data["count"], 1)
+        by_display_name = self.client.get("/api/audit-logs/?search=Audit Reviewer")
+        self.assertEqual(by_display_name.status_code, status.HTTP_200_OK)
+        self.assertEqual(by_display_name.data["count"], 1)
+        self.assertEqual(by_display_name.data["results"][0]["id"], self.log2.id)
 
-        by_model = self.client.get("/api/audit-logs/?model=document")
-        self.assertEqual(by_model.status_code, status.HTTP_200_OK)
-        self.assertEqual(by_model.data["count"], 2)
+        by_action_code = self.client.get("/api/audit-logs/?search=approve")
+        self.assertEqual(by_action_code.status_code, status.HTTP_200_OK)
+        self.assertEqual(by_action_code.data["count"], 1)
+        self.assertEqual(by_action_code.data["results"][0]["id"], self.log2.id)
 
-        by_table_name = self.client.get("/api/audit-logs/?table_name=dossier")
-        self.assertEqual(by_table_name.status_code, status.HTTP_200_OK)
-        self.assertEqual(by_table_name.data["count"], 1)
+        by_action_label = self.client.get("/api/audit-logs/?search=موافقة")
+        self.assertEqual(by_action_label.status_code, status.HTTP_200_OK)
+        self.assertEqual(by_action_label.data["count"], 1)
+        self.assertEqual(by_action_label.data["results"][0]["id"], self.log2.id)
 
-        by_object_id = self.client.get("/api/audit-logs/?object_id=20")
-        self.assertEqual(by_object_id.status_code, status.HTTP_200_OK)
-        self.assertEqual(by_object_id.data["count"], 1)
+        by_action_filter = self.client.get("/api/audit-logs/?action=approve")
+        self.assertEqual(by_action_filter.status_code, status.HTTP_200_OK)
+        self.assertEqual(by_action_filter.data["count"], 1)
+        self.assertEqual(by_action_filter.data["results"][0]["id"], self.log2.id)
+
+        by_entity_title = self.client.get("/api/audit-logs/?search=Family Statement")
+        self.assertEqual(by_entity_title.status_code, status.HTTP_200_OK)
+        self.assertEqual(by_entity_title.data["count"], 1)
+        self.assertEqual(by_entity_title.data["results"][0]["id"], self.log2.id)
+
+        by_summary = self.client.get("/api/audit-logs/?search=Approved family statement")
+        self.assertEqual(by_summary.status_code, status.HTTP_200_OK)
+        self.assertEqual(by_summary.data["count"], 1)
+        self.assertEqual(by_summary.data["results"][0]["id"], self.log2.id)
 
         today_str = timezone.now().date().isoformat()
         by_date = self.client.get(f"/api/audit-logs/?date_from={today_str}")
         self.assertEqual(by_date.status_code, status.HTTP_200_OK)
         self.assertGreaterEqual(by_date.data["count"], 1)
+
+    def test_removed_technical_filters_do_not_affect_results(self):
+        self.client.force_authenticate(user=self.admin)
+
+        baseline = self.client.get("/api/audit-logs/?action=approve")
+        ignored_filters = self.client.get(
+            "/api/audit-logs/?action=approve&entity_type=user&entity_id=999&model=user&table_name=user&object_id=999"
+        )
+        self.assertEqual(ignored_filters.status_code, status.HTTP_200_OK)
+        self.assertEqual(ignored_filters.data["count"], baseline.data["count"])
+        self.assertEqual(ignored_filters.data["results"][0]["id"], baseline.data["results"][0]["id"])
+
+    def test_audit_logs_default_pagination_stays_stable(self):
+        self.client.force_authenticate(user=self.admin)
+        for index in range(25):
+            AuditLog.objects.create(
+                user=self.admin,
+                action=AuditAction.UPDATE,
+                entity_type="user",
+                entity_id=self.admin.id,
+                new_values={"message": f"bulk update {index}"},
+            )
+
+        first_page = self.client.get("/api/audit-logs/?page_size=5")
+        self.assertEqual(first_page.status_code, status.HTTP_200_OK)
+        self.assertEqual(first_page.data["count"], 28)
+        self.assertEqual(len(first_page.data["results"]), 20)
+        self.assertIsNotNone(first_page.data["next"])
+
+        second_page = self.client.get("/api/audit-logs/?page=2&page_size=5")
+        self.assertEqual(second_page.status_code, status.HTTP_200_OK)
+        self.assertEqual(len(second_page.data["results"]), 8)
 
     def test_audit_log_detail(self):
         """Audit log detail is admin-only per approved policy (Req 6)."""
@@ -731,6 +829,26 @@ class DocumentListQueryApiTests(APITestCase):
             shelf_number="3",
             created_by=self.admin,
         )
+        self.numeric_entry_dossier = Dossier.objects.create(
+            file_number="10045",
+            full_name="Numeric Entry Dossier",
+            national_id="Q-N4",
+            personal_id="Q-P4",
+            room_number="4",
+            column_number="4",
+            shelf_number="4",
+            created_by=self.data_entry,
+        )
+        self.numeric_other_dossier = Dossier.objects.create(
+            file_number="20077",
+            full_name="Numeric Other Dossier",
+            national_id="Q-N5",
+            personal_id="Q-P5",
+            room_number="5",
+            column_number="5",
+            shelf_number="5",
+            created_by=self.other_data_entry,
+        )
 
         self.entry_approved = Document.objects.create(
             dossier=self.entry_dossier,
@@ -802,6 +920,28 @@ class DocumentListQueryApiTests(APITestCase):
             status=DocumentStatus.PENDING,
             created_by=self.admin,
         )
+        self.numeric_entry_pending = Document.objects.create(
+            dossier=self.numeric_entry_dossier,
+            doc_type=self.doc_type_1,
+            doc_number="ENTRY-NUM",
+            doc_name="Entry Numeric Dossier",
+            file_path="archive/entry-numeric.pdf",
+            file_size_kb=127,
+            mime_type="application/pdf",
+            status=DocumentStatus.PENDING,
+            created_by=self.data_entry,
+        )
+        self.numeric_other_pending = Document.objects.create(
+            dossier=self.numeric_other_dossier,
+            doc_type=self.doc_type_2,
+            doc_number="OTHER-NUM",
+            doc_name="Other Numeric Dossier",
+            file_path="archive/other-numeric.pdf",
+            file_size_kb=128,
+            mime_type="application/pdf",
+            status=DocumentStatus.PENDING,
+            created_by=self.other_data_entry,
+        )
         self.deleted_entry_approved = Document.objects.create(
             dossier=self.entry_dossier,
             doc_type=self.doc_type_1,
@@ -822,6 +962,8 @@ class DocumentListQueryApiTests(APITestCase):
         Document.objects.filter(pk=self.entry_draft.pk).update(created_at=now - timedelta(days=3))
         Document.objects.filter(pk=self.other_entry_approved.pk).update(created_at=now - timedelta(days=2))
         Document.objects.filter(pk=self.admin_pending.pk).update(created_at=now - timedelta(days=1))
+        Document.objects.filter(pk=self.numeric_entry_pending.pk).update(created_at=now - timedelta(hours=12))
+        Document.objects.filter(pk=self.numeric_other_pending.pk).update(created_at=now - timedelta(hours=6))
         Document.objects.filter(pk=self.deleted_entry_approved.pk).update(created_at=now)
 
     def test_document_visibility_for_admin_data_entry_auditor_and_reader(self):
@@ -837,6 +979,8 @@ class DocumentListQueryApiTests(APITestCase):
                 self.entry_draft.id,
                 self.other_entry_approved.id,
                 self.admin_pending.id,
+                self.numeric_entry_pending.id,
+                self.numeric_other_pending.id,
             },
         )
 
@@ -850,6 +994,7 @@ class DocumentListQueryApiTests(APITestCase):
                 self.entry_pending.id,
                 self.entry_rejected.id,
                 self.entry_draft.id,
+                self.numeric_entry_pending.id,
             },
         )
 
@@ -862,6 +1007,7 @@ class DocumentListQueryApiTests(APITestCase):
                 self.entry_approved.id,
                 self.entry_pending.id,
                 self.entry_rejected.id,
+                self.numeric_entry_pending.id,
             },
         )
 
@@ -924,6 +1070,40 @@ class DocumentListQueryApiTests(APITestCase):
         self.assertEqual(hidden_response.status_code, status.HTTP_200_OK)
         self.assertEqual(hidden_response.data["count"], 0)
 
+    def test_document_dossier_filter_by_numeric_file_number_respects_scope(self):
+        self.client.force_authenticate(user=self.admin)
+        general_search_response = self.client.get(f"/api/documents/?search={self.numeric_entry_dossier.file_number}")
+        self.assertEqual(general_search_response.status_code, status.HTTP_200_OK)
+        self.assertEqual(
+            {item["id"] for item in general_search_response.data["results"]},
+            {self.numeric_entry_pending.id},
+        )
+
+        dedicated_filter_response = self.client.get(f"/api/documents/?dossier={self.numeric_entry_dossier.file_number}")
+        self.assertEqual(dedicated_filter_response.status_code, status.HTTP_200_OK)
+        self.assertEqual(
+            {item["id"] for item in dedicated_filter_response.data["results"]},
+            {self.numeric_entry_pending.id},
+        )
+
+        self.client.force_authenticate(user=self.auditor)
+        scoped_response = self.client.get(f"/api/documents/?dossier={self.numeric_other_dossier.file_number}")
+        self.assertEqual(scoped_response.status_code, status.HTTP_200_OK)
+        self.assertEqual(scoped_response.data["count"], 0)
+
+        nonexistent_response = self.client.get("/api/documents/?dossier=999999")
+        self.assertEqual(nonexistent_response.status_code, status.HTTP_200_OK)
+        self.assertEqual(nonexistent_response.data["count"], 0)
+
+    def test_document_number_search_still_works_after_dossier_search_fix(self):
+        self.client.force_authenticate(user=self.admin)
+        response = self.client.get(f"/api/documents/?search={self.entry_pending.doc_number}")
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(
+            {item["id"] for item in response.data["results"]},
+            {self.entry_pending.id},
+        )
+
     def test_document_status_filter_is_role_safe(self):
         self.client.force_authenticate(user=self.auditor)
         auditor_draft = self.client.get("/api/documents/?status=draft")
@@ -970,12 +1150,14 @@ class DocumentListQueryApiTests(APITestCase):
                 self.entry_draft.id,
                 self.other_entry_approved.id,
                 self.admin_pending.id,
+                self.numeric_entry_pending.id,
+                self.numeric_other_pending.id,
             ],
         )
 
         paged = self.client.get("/api/documents/?page_size=2")
         self.assertEqual(paged.status_code, status.HTTP_200_OK)
-        self.assertEqual(paged.data["count"], 6)
+        self.assertEqual(paged.data["count"], 8)
         self.assertEqual(len(paged.data["results"]), 2)
 
     def test_deleted_documents_never_expand_search_scope(self):

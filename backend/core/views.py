@@ -11,8 +11,12 @@ from rest_framework.views import APIView
 from django.utils import timezone
 
 from core.access import (
+    annotate_audit_log_human_fields,
+    apply_audit_log_filters,
+    apply_audit_log_search,
     apply_document_advanced_filters,
     apply_dossier_advanced_filters,
+    get_audit_log_visibility_queryset,
     get_document_detail_queryset_for_user,
     get_document_visibility_queryset,
     get_document_review_scope_queryset_for_user,
@@ -44,7 +48,6 @@ from core.services.document_workflow_service import (
     soft_delete_document,
     submit_document,
 )
-from django.utils.dateparse import parse_date, parse_datetime
 
 
 class StandardListPagination(PageNumberPagination):
@@ -223,8 +226,6 @@ class DocumentTypeListAPIView(generics.ListAPIView):
 
 class AuditLogPagination(PageNumberPagination):
     page_size = 20
-    page_size_query_param = "page_size"
-    max_page_size = 100
 
 
 class DocumentSubmitAPIView(APIView):
@@ -297,61 +298,19 @@ class AuditLogListAPIView(generics.ListAPIView):
     pagination_class = AuditLogPagination
 
     def get_queryset(self):
-        queryset = AuditLog.objects.select_related("user").order_by("-created_at", "-id")
-
-        action = self.request.query_params.get("action")
-        if action:
-            queryset = queryset.filter(action=action)
-
-        actor = self.request.query_params.get("actor")
-        if actor:
-            if actor.isdigit():
-                queryset = queryset.filter(user_id=int(actor))
-            else:
-                queryset = queryset.filter(user__username=actor)
-
-        table_name = self.request.query_params.get("table_name")
-        model = self.request.query_params.get("model")
-        if table_name:
-            queryset = queryset.filter(entity_type=table_name)
-        if model:
-            queryset = queryset.filter(entity_type=model)
-
-        object_id = self.request.query_params.get("object_id")
-        if object_id and object_id.isdigit():
-            queryset = queryset.filter(entity_id=int(object_id))
-
-        date_from = self.request.query_params.get("date_from")
-        if date_from:
-            parsed = parse_datetime(date_from)
-            if parsed is None:
-                parsed_date = parse_date(date_from)
-                if parsed_date is not None:
-                    queryset = queryset.filter(created_at__date__gte=parsed_date)
-            else:
-                if timezone.is_naive(parsed):
-                    parsed = timezone.make_aware(parsed, timezone.get_current_timezone())
-                queryset = queryset.filter(created_at__gte=parsed)
-
-        date_to = self.request.query_params.get("date_to")
-        if date_to:
-            parsed = parse_datetime(date_to)
-            if parsed is None:
-                parsed_date = parse_date(date_to)
-                if parsed_date is not None:
-                    queryset = queryset.filter(created_at__date__lte=parsed_date)
-            else:
-                if timezone.is_naive(parsed):
-                    parsed = timezone.make_aware(parsed, timezone.get_current_timezone())
-                queryset = queryset.filter(created_at__lte=parsed)
-
-        return queryset
+        queryset = get_audit_log_visibility_queryset(self.request.user)
+        queryset = apply_audit_log_filters(queryset, self.request.query_params)
+        queryset = annotate_audit_log_human_fields(queryset)
+        queryset = apply_audit_log_search(queryset, self.request.query_params)
+        return queryset.order_by("-created_at", "-id")
 
 
 class AuditLogRetrieveAPIView(generics.RetrieveAPIView):
     permission_classes = [IsAuthenticated, AuditLogPermission]
     serializer_class = AuditLogSerializer
-    queryset = AuditLog.objects.select_related("user").all()
+
+    def get_queryset(self):
+        return annotate_audit_log_human_fields(get_audit_log_visibility_queryset(self.request.user))
 
 
 class UserManagementListCreateAPIView(generics.ListCreateAPIView):
