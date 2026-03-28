@@ -195,6 +195,14 @@ AUDIT_CHANGE_FIELD_LABELS = {
 }
 
 
+DOCUMENT_STATUS_LABELS = {
+    DocumentStatus.DRAFT: "مسودة",
+    DocumentStatus.PENDING: "قيد المراجعة",
+    DocumentStatus.APPROVED: "معتمدة",
+    DocumentStatus.REJECTED: "مرفوضة",
+}
+
+
 def get_user_full_name(user):
     full_name = f"{user.first_name or ''} {user.last_name or ''}".strip()
     return full_name or None
@@ -358,6 +366,7 @@ class AuditLogSerializer(serializers.ModelSerializer):
 class DocumentSummarySerializer(serializers.ModelSerializer):
     is_approved_by_admin = serializers.SerializerMethodField()
     is_rejected_by_admin = serializers.SerializerMethodField()
+    status_display_label = serializers.SerializerMethodField()
     dossier_name = serializers.CharField(source="dossier.file_number", read_only=True)
     doc_type_name = serializers.CharField(source="doc_type.name", read_only=True)
     created_by_name = serializers.CharField(source="created_by.username", read_only=True)
@@ -378,6 +387,7 @@ class DocumentSummarySerializer(serializers.ModelSerializer):
             "file_size_kb",
             "mime_type",
             "status",
+            "status_display_label",
             "notes",
             "created_by",
             "created_by_name",
@@ -407,21 +417,20 @@ class DocumentSummarySerializer(serializers.ModelSerializer):
 
     def get_is_rejected_by_admin(self, obj):
         """
-        Returns True if document is rejected and reviewed by an admin user,
-        indicating that an admin rejected a document in the auditor's scope.
+        Returns True when the current rejected state was set by an admin user.
         """
         if obj.status != DocumentStatus.REJECTED:
             return False
-        if not obj.created_by:
-            return False
-        # Get the assigned auditor for the creator (if creator is data_entry)
-        assigned_auditor_id = getattr(obj.created_by, "assigned_auditor_id", None)
-        if not assigned_auditor_id:
-            return False
-        # Check if reviewer exists and is an admin
         if not obj.reviewed_by:
             return False
         return obj.reviewed_by.role == UserRole.ADMIN
+
+    def get_status_display_label(self, obj):
+        if self.get_is_approved_by_admin(obj):
+            return "معتمدة من المدير"
+        if self.get_is_rejected_by_admin(obj):
+            return "مرفوضة من المدير"
+        return DOCUMENT_STATUS_LABELS.get(obj.status, obj.status)
 
 
 class DocumentCreateSerializer(serializers.ModelSerializer):

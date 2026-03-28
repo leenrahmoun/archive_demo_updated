@@ -253,7 +253,6 @@ export function DocumentDetailPage() {
   }
 
   const isRejected = document.status === "rejected";
-  const isApprovedByAdmin = document.status === "approved" && document.is_approved_by_admin;
   const isDocumentCreator = user?.id === document.created_by;
   const isCreatorDataEntry = user?.role === "data_entry" && isDocumentCreator;
   const isReader = user?.role === "reader";
@@ -276,9 +275,6 @@ export function DocumentDetailPage() {
     !document.is_deleted &&
     (user?.role === "admin" || (user?.role === "data_entry" && isDocumentCreator)) &&
     (document.status === "draft" || isRejected);
-  const adminApprovalMessage = document.reviewed_by_name
-    ? `تم اعتماد هذه الوثيقة من المدير بواسطة ${document.reviewed_by_name}.`
-    : "تم اعتماد هذه الوثيقة من المدير.";
   const pdfSectionTitle = isReadOnlyViewer ? "قراءة ملف PDF" : "ملف PDF";
   const pdfSectionHelper = isReader
     ? "يمكنك قراءة ملف الوثيقة وطباعته فقط. لا توجد أي صلاحيات تعديل على المحتوى."
@@ -305,7 +301,7 @@ export function DocumentDetailPage() {
         <div className="card rejection-card">
           <div className="rejection-card__header">
             <h3 className="rejection-card__title">تم رفض هذه الوثيقة</h3>
-            <StatusBadge status={document.status} />
+            <StatusBadge status={document.status} label={document.status_display_label} />
           </div>
           <div className="rejection-card__reason">
             <span className="rejection-card__label">سبب الرفض</span>
@@ -337,19 +333,6 @@ export function DocumentDetailPage() {
         </div>
       ) : null}
 
-      {isApprovedByAdmin ? (
-        <div className="card admin-approval-card">
-          <div className="admin-approval-card__header">
-            <h3 className="admin-approval-card__title">اعتماد المدير</h3>
-            <StatusBadge status={document.status} />
-          </div>
-          <p className="admin-approval-card__message">{adminApprovalMessage}</p>
-          {document.reviewed_at ? (
-            <p className="admin-approval-card__meta">تاريخ الاعتماد: {formatDate(document.reviewed_at)}</p>
-          ) : null}
-        </div>
-      ) : null}
-
       <div className="card details-grid">
         <p>
           <strong>رقم الوثيقة:</strong> {document.doc_number}
@@ -358,7 +341,7 @@ export function DocumentDetailPage() {
           <strong>اسم الوثيقة:</strong> {document.doc_name}
         </p>
         <p>
-          <strong>الحالة:</strong> <StatusBadge status={document.status} />
+          <strong>الحالة:</strong> <StatusBadge status={document.status} label={document.status_display_label} />
         </p>
         <p>
           <strong>رقم الإضبارة:</strong>{" "}

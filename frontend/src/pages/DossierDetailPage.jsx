@@ -84,7 +84,7 @@ export function DossierDetailPage() {
                 <td>{doc.doc_number}</td>
                 <td>{doc.doc_name}</td>
                 <td>
-                  <StatusBadge status={doc.status} />
+                  <StatusBadge status={doc.status} label={doc.status_display_label} />
                 </td>
                 <td className="path-text">{doc.doc_type_name || doc.doc_type}</td>
               </tr>

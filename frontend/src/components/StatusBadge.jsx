@@ -5,7 +5,7 @@ const STATUS_LABELS = {
   rejected: "مرفوضة",
 };
 
-export function StatusBadge({ status }) {
-  const label = STATUS_LABELS[status] || status || "-";
-  return <span className={`status-badge status-${status || "unknown"}`}>{label}</span>;
+export function StatusBadge({ status, label }) {
+  const resolvedLabel = label || STATUS_LABELS[status] || status || "-";
+  return <span className={`status-badge status-${status || "unknown"}`}>{resolvedLabel}</span>;
 }

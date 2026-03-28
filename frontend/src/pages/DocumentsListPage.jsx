@@ -9,7 +9,6 @@ import { FilterSection } from "../components/FilterSection";
 import { PageHeader } from "../components/PageHeader";
 import { PaginationControls } from "../components/PaginationControls";
 import { StatusBadge } from "../components/StatusBadge";
-import { getApprovalOriginLabel, getApprovalOriginTone } from "../utils/documentReview";
 
 const DEFAULT_PAGE_SIZE = 20;
 
@@ -152,35 +151,21 @@ export function DocumentsListPage() {
               </tr>
             </thead>
             <tbody>
-              {data.results.map((doc) => {
-                const approvalOriginLabel = getApprovalOriginLabel(doc);
-                const approvalOriginTone = getApprovalOriginTone(doc);
-
-                return (
-                  <tr key={doc.id}>
-                    <td>{doc.doc_number}</td>
-                    <td>{doc.doc_name}</td>
-                    <td>
-                      <StatusBadge status={doc.status} />
-                      {approvalOriginLabel ? (
-                        <div className={`approval-origin-note approval-origin-note--${approvalOriginTone || "neutral"}`}>
-                          {approvalOriginLabel}
-                        </div>
-                      ) : null}
-                    </td>
-                    <td>{doc.dossier_name || doc.dossier}</td>
-                    <td>{doc.doc_type_name || doc.doc_type}</td>
-                    <td>
-                      {doc.is_rejected_by_admin ? (
-                        <span style={{ color: "#be123c", fontWeight: "bold" }}>مرفوض من الإدارة</span>
-                      ) : null}
-                    </td>
-                    <td>
-                      <Link to={`/documents/${doc.id}`}>عرض</Link>
-                    </td>
-                  </tr>
-                );
-              })}
+              {data.results.map((doc) => (
+                <tr key={doc.id}>
+                  <td>{doc.doc_number}</td>
+                  <td>{doc.doc_name}</td>
+                  <td>
+                    <StatusBadge status={doc.status} label={doc.status_display_label} />
+                  </td>
+                  <td>{doc.dossier_name || doc.dossier}</td>
+                  <td>{doc.doc_type_name || doc.doc_type}</td>
+                  <td>{doc.notes || "-"}</td>
+                  <td>
+                    <Link to={`/documents/${doc.id}`}>عرض</Link>
+                  </td>
+                </tr>
+              ))}
             </tbody>
           </table>
           {!data.results.length ? <EmptyBlock message="لا توجد نتائج." /> : null}

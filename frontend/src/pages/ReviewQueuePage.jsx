@@ -24,9 +24,9 @@ const STATUS_BADGE_STYLES = {
   draft: { background: "#f3f4f6", color: "#374151", border: "#d1d5db" },
 };
 
-function StatusBadge({ status }) {
+function StatusBadge({ status, label }) {
   const style = STATUS_BADGE_STYLES[status] || STATUS_BADGE_STYLES.draft;
-  const label = STATUS_LABELS[status] || status;
+  const resolvedLabel = label || STATUS_LABELS[status] || status;
 
   return (
     <span
@@ -41,7 +41,7 @@ function StatusBadge({ status }) {
         border: `1px solid ${style.border}`,
       }}
     >
-      {label}
+      {resolvedLabel}
     </span>
   );
 }
@@ -127,31 +127,7 @@ export function ReviewQueuePage() {
                   <td>{doc.created_by_name || doc.created_by || "—"}</td>
                   <td>{formatDate(doc.created_at)}</td>
                   <td>
-                    <StatusBadge status={doc.status} />
-                    {doc.is_approved_by_admin && (
-                      <span
-                        style={{
-                          display: "block",
-                          fontSize: "0.75rem",
-                          color: "#166534",
-                          marginTop: "0.25rem",
-                        }}
-                      >
-                        تمت الموافقة من قبل المدير
-                      </span>
-                    )}
-                    {doc.rejection_reason && doc.reviewed_by_role === "admin" && (
-                      <span
-                        style={{
-                          display: "block",
-                          fontSize: "0.75rem",
-                          color: "#991b1b",
-                          marginTop: "0.25rem",
-                        }}
-                      >
-                        تم الرفض من قبل المدير
-                      </span>
-                    )}
+                    <StatusBadge status={doc.status} label={doc.status_display_label} />
                   </td>
                   <td>
                     <Link to={`/documents/${doc.id}`}>{isAdmin ? "عرض" : "مراجعة"}</Link>

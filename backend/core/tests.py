@@ -2452,6 +2452,7 @@ class AdminApprovalIndicatorTests(APITestCase):
         self.assertFalse(serializer.data["is_approved_by_admin"])
         self.assertEqual(serializer.data["reviewed_by_role"], UserRole.AUDITOR)
         self.assertEqual(serializer.data["reviewed_by_name"], self.auditor.username)
+        self.assertEqual(serializer.data["status_display_label"], "معتمدة")
 
     def test_approved_by_admin_is_flagged_for_auditor_scope(self):
         """Document approved by admin should have is_approved_by_admin=True when data_entry has assigned auditor."""
@@ -2478,6 +2479,7 @@ class AdminApprovalIndicatorTests(APITestCase):
         self.assertTrue(serializer.data["is_approved_by_admin"])
         self.assertEqual(serializer.data["reviewed_by_role"], UserRole.ADMIN)
         self.assertEqual(serializer.data["reviewed_by_name"], self.admin.username)
+        self.assertEqual(serializer.data["status_display_label"], "معتمدة من المدير")
 
     def test_approved_by_other_auditor_is_not_flagged(self):
         """Document approved by different auditor (not admin) should NOT have is_approved_by_admin=True."""
@@ -2502,6 +2504,7 @@ class AdminApprovalIndicatorTests(APITestCase):
         from core.serializers import DocumentSummarySerializer
         serializer = DocumentSummarySerializer(doc)
         self.assertFalse(serializer.data["is_approved_by_admin"])
+        self.assertEqual(serializer.data["status_display_label"], "معتمدة")
 
     def test_non_approved_document_is_not_flagged(self):
         """Non-approved documents should have is_approved_by_admin=False."""
@@ -2525,6 +2528,7 @@ class AdminApprovalIndicatorTests(APITestCase):
         from core.serializers import DocumentSummarySerializer
         serializer = DocumentSummarySerializer(doc)
         self.assertFalse(serializer.data["is_approved_by_admin"])
+        self.assertEqual(serializer.data["status_display_label"], "قيد المراجعة")
 
     def test_no_assigned_auditor_still_shows_admin_approval(self):
         """Admin approval should be indicated even when no auditor assignment exists."""
@@ -2547,6 +2551,50 @@ class AdminApprovalIndicatorTests(APITestCase):
         from core.serializers import DocumentSummarySerializer
         serializer = DocumentSummarySerializer(doc)
         self.assertTrue(serializer.data["is_approved_by_admin"])
+        self.assertEqual(serializer.data["status_display_label"], "معتمدة من المدير")
+
+    def test_rejected_by_admin_is_flagged_and_uses_manager_status_text(self):
+        doc = Document.objects.create(
+            dossier=self.dossier,
+            doc_type=self.doc_type,
+            doc_number="AP-005-REJ",
+            doc_name="Rejected by Admin",
+            file_path="archive/test5-rej.pdf",
+            file_size_kb=100,
+            status=DocumentStatus.REJECTED,
+            created_by=self.data_entry,
+            reviewed_by=self.admin,
+            rejection_reason="Missing signature",
+        )
+
+        from core.serializers import DocumentSummarySerializer
+
+        serializer = DocumentSummarySerializer(doc)
+        self.assertTrue(serializer.data["is_rejected_by_admin"])
+        self.assertEqual(serializer.data["status_display_label"], "مرفوضة من المدير")
+
+    def test_rejected_by_auditor_keeps_normal_status_text(self):
+        self.data_entry.assigned_auditor = self.auditor
+        self.data_entry.save()
+
+        doc = Document.objects.create(
+            dossier=self.dossier,
+            doc_type=self.doc_type,
+            doc_number="AP-005-REJ-AUD",
+            doc_name="Rejected by Auditor",
+            file_path="archive/test5-rej-aud.pdf",
+            file_size_kb=100,
+            status=DocumentStatus.REJECTED,
+            created_by=self.data_entry,
+            reviewed_by=self.auditor,
+            rejection_reason="Missing stamp",
+        )
+
+        from core.serializers import DocumentSummarySerializer
+
+        serializer = DocumentSummarySerializer(doc)
+        self.assertFalse(serializer.data["is_rejected_by_admin"])
+        self.assertEqual(serializer.data["status_display_label"], "مرفوضة")
 
     def test_api_includes_indicator_for_auditor(self):
         """API response includes is_approved_by_admin field when auditor views documents."""
@@ -2579,6 +2627,7 @@ class AdminApprovalIndicatorTests(APITestCase):
         self.assertTrue(doc_data["is_approved_by_admin"])
         self.assertEqual(doc_data["reviewed_by_role"], UserRole.ADMIN)
         self.assertEqual(doc_data["reviewed_by_name"], self.admin.username)
+        self.assertEqual(doc_data["status_display_label"], "معتمدة من المدير")
 
     def test_document_detail_api_includes_reviewer_name_and_role_for_approved_document(self):
         self.data_entry.assigned_auditor = self.auditor
@@ -2602,6 +2651,7 @@ class AdminApprovalIndicatorTests(APITestCase):
         self.assertEqual(response.data["reviewed_by_role"], UserRole.AUDITOR)
         self.assertEqual(response.data["reviewed_by_name"], self.auditor.username)
         self.assertFalse(response.data["is_approved_by_admin"])
+        self.assertEqual(response.data["status_display_label"], "معتمدة")
 
     def test_api_includes_indicator_for_reader(self):
         """API response includes is_approved_by_admin field when reader views documents."""
@@ -2631,6 +2681,7 @@ class AdminApprovalIndicatorTests(APITestCase):
         doc_data = next((d for d in response.data["results"] if d["id"] == doc.id), None)
         self.assertIsNotNone(doc_data)
         self.assertIn("is_approved_by_admin", doc_data)
+        self.assertEqual(doc_data["status_display_label"], "معتمدة من المدير")
 
 
 class AuditorScopedDocumentVisibilityTests(APITestCase):
