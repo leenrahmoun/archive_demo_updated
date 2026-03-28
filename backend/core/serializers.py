@@ -4,6 +4,7 @@ from django.db import IntegrityError
 from rest_framework import serializers
 from rest_framework_simplejwt.tokens import RefreshToken, TokenError
 
+from core.access import get_dossier_documents_for_user
 from core.models import AuditAction, AuditLog, Document, DocumentStatus, DocumentType, Dossier, Governorate, UserRole
 from core.services.audit_log_service import create_audit_log
 from core.services.document_storage_service import (
@@ -17,6 +18,18 @@ from core.services.document_storage_service import (
 from core.services.dossier_service import DossierCreationError, create_dossier_with_first_document
 
 User = get_user_model()
+
+
+class MinimalUserSerializer(serializers.ModelSerializer):
+    full_name = serializers.SerializerMethodField()
+
+    class Meta:
+        model = User
+        fields = ("id", "username", "full_name", "role")
+
+    def get_full_name(self, obj):
+        full_name = f"{obj.first_name or ''} {obj.last_name or ''}".strip()
+        return full_name or None
 
 
 class MeSerializer(serializers.ModelSerializer):
@@ -34,12 +47,15 @@ class MeSerializer(serializers.ModelSerializer):
 
 class UserManagementSerializer(serializers.ModelSerializer):
     """Admin-only serializer for user CRUD with assigned_auditor linkage."""
+    full_name = serializers.SerializerMethodField()
+    assigned_auditor = MinimalUserSerializer(read_only=True)
     assigned_auditor_id = serializers.PrimaryKeyRelatedField(
         source="assigned_auditor",
         queryset=User.objects.filter(role=UserRole.AUDITOR),
         required=False,
         allow_null=True,
     )
+    assigned_auditor_username = serializers.CharField(source="assigned_auditor.username", read_only=True)
     password = serializers.CharField(write_only=True, required=False)
 
     class Meta:
@@ -47,23 +63,35 @@ class UserManagementSerializer(serializers.ModelSerializer):
         fields = (
             "id",
             "username",
+            "full_name",
             "password",
             "first_name",
             "last_name",
             "email",
             "is_active",
             "role",
+            "assigned_auditor",
             "assigned_auditor_id",
+            "assigned_auditor_username",
             "date_joined",
         )
         read_only_fields = ("date_joined",)
 
     def validate(self, data):
-        """Clear assigned_auditor if role is not data_entry."""
         role = data.get("role") or getattr(self.instance, "role", None)
+        assigned_auditor = data.get("assigned_auditor", getattr(self.instance, "assigned_auditor", None))
+        if self.instance is None and not data.get("password"):
+            raise serializers.ValidationError({"password": "Password is required when creating a user."})
         if role != UserRole.DATA_ENTRY:
             data["assigned_auditor"] = None
+            return data
+        if assigned_auditor is None:
+            raise serializers.ValidationError({"assigned_auditor_id": "Assigned reviewer is required for data entry users."})
         return data
+
+    def get_full_name(self, obj):
+        full_name = f"{obj.first_name or ''} {obj.last_name or ''}".strip()
+        return full_name or None
 
     def create(self, validated_data):
         password = validated_data.pop("password", None)
@@ -164,6 +192,7 @@ class DocumentSummarySerializer(serializers.ModelSerializer):
     doc_type_name = serializers.CharField(source="doc_type.name", read_only=True)
     created_by_name = serializers.CharField(source="created_by.username", read_only=True)
     reviewed_by_name = serializers.CharField(source="reviewed_by.username", read_only=True)
+    reviewed_by_role = serializers.CharField(source="reviewed_by.role", read_only=True)
 
     class Meta:
         model = Document
@@ -184,8 +213,14 @@ class DocumentSummarySerializer(serializers.ModelSerializer):
             "created_by_name",
             "reviewed_by",
             "reviewed_by_name",
+            "reviewed_by_role",
             "created_at",
             "updated_at",
+            "submitted_at",
+            "reviewed_at",
+            "rejection_reason",
+            "is_deleted",
+            "deleted_at",
             "is_approved_by_admin",
             "is_rejected_by_admin",
         )
@@ -254,8 +289,11 @@ class DocumentCreateSerializer(serializers.ModelSerializer):
         return value
 
     def validate_dossier(self, value):
+        user = self.context["request"].user
         if value.is_archived:
             raise serializers.ValidationError("Cannot add documents to an archived dossier.")
+        if user.role == UserRole.DATA_ENTRY and value.created_by_id != user.id:
+            raise serializers.ValidationError("You can only add documents to dossiers you created.")
         return value
 
     def create(self, validated_data):
@@ -391,11 +429,7 @@ class DossierDetailSerializer(DossierListSerializer):
 
     def get_documents(self, dossier):
         user = self.context["request"].user
-        qs = dossier.documents.filter(is_deleted=False)
-        if user.role == UserRole.READER:
-            qs = qs.filter(status="approved")
-        elif user.role == UserRole.AUDITOR:
-            qs = qs.filter(status__in=["pending", "approved"])
+        qs = get_dossier_documents_for_user(user, dossier)
         return DocumentSummarySerializer(qs, many=True).data
 
 class FirstDocumentInputSerializer(serializers.Serializer):

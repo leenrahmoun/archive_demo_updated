@@ -24,9 +24,12 @@ class User(AbstractUser):
 
     def clean(self) -> None:
         super().clean()
-        # Only data_entry users can have an assigned auditor
-        if self.assigned_auditor is not None and self.role != UserRole.DATA_ENTRY:
+        if self.assigned_auditor is None:
+            return
+        if self.role != UserRole.DATA_ENTRY:
             raise ValidationError({"assigned_auditor": "Only Data Entry users can have an assigned auditor."})
+        if self.assigned_auditor.role != UserRole.AUDITOR:
+            raise ValidationError({"assigned_auditor": "Assigned reviewer must have the auditor role."})
 
     def __str__(self) -> str:
         return f"{self.username} ({self.role})"

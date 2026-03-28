@@ -15,6 +15,9 @@ const DEFAULT_PAGE_SIZE = 20;
 export function DocumentsListPage() {
   const { user } = useAuth();
   const isAuditor = user?.role === "auditor";
+  const subtitle = isAuditor
+    ? "عرض الوثائق ضمن نطاق مدخلي البيانات المرتبطين بك."
+    : "عرض حالة الوثائق مع أدوات تصفية وترتيب.";
 
   const [documentTypes, setDocumentTypes] = useState([]);
   const [filters, setFilters] = useState({
@@ -66,7 +69,8 @@ export function DocumentsListPage() {
 
   return (
     <section>
-      <PageHeader title="قائمة الوثائق" subtitle="عرض حالة الوثائق مع أدوات تصفية وترتيب." />
+      <PageHeader title="قائمة الوثائق" subtitle={subtitle} />
+      {isAuditor ? <AlertMessage type="info" message="يمكنك تصفح الوثائق المعلقة والمرفوضة والمعتمدة ضمن نطاقك فقط، دون صلاحيات تعديل المحتوى." /> : null}
 
       <FilterSection>
         <input

@@ -1,12 +1,13 @@
 import { useEffect, useRef, useState } from "react";
 import { Link, useParams } from "react-router-dom";
-import { getDocumentById, getDocumentPdfBlob, replaceDocumentPdf } from "../api/documentsApi";
+import { getDocumentById, getDocumentPdfBlob, replaceDocumentPdf, submitDocument } from "../api/documentsApi";
 import { useAuth } from "../auth/useAuth";
 import { AlertMessage } from "../components/AlertMessage";
 import { DocumentWorkflowActions } from "../components/DocumentWorkflowActions";
 import { PageHeader } from "../components/PageHeader";
 import { EmptyBlock, LoadingBlock } from "../components/StateBlock";
 import { StatusBadge } from "../components/StatusBadge";
+import { flattenErrors } from "../utils/errors";
 import { formatDate } from "../utils/format";
 
 export function DocumentDetailPage() {
@@ -21,8 +22,8 @@ export function DocumentDetailPage() {
   const [pdfUrl, setPdfUrl] = useState("");
   const [pdfError, setPdfError] = useState("");
   const [isReplacingFile, setIsReplacingFile] = useState(false);
-  const [replaceSuccess, setReplaceSuccess] = useState("");
-  const [replaceError, setReplaceError] = useState("");
+  const [isSubmittingReview, setIsSubmittingReview] = useState(false);
+  const [feedback, setFeedback] = useState({ success: "", error: "" });
 
   function clearPdfUrl() {
     setPdfUrl((currentUrl) => {
@@ -55,6 +56,18 @@ export function DocumentDetailPage() {
     }
   }
 
+  async function refreshDocumentDetails() {
+    const result = await getDocumentById(id);
+    setDocument(result);
+    setError("");
+    return result;
+  }
+
+  function getErrorMessage(requestError, fallbackMessage) {
+    const messages = flattenErrors(requestError?.response?.data);
+    return messages[0] || fallbackMessage;
+  }
+
   useEffect(() => {
     async function loadDocument() {
       try {
@@ -72,8 +85,7 @@ export function DocumentDetailPage() {
 
     setIsPdfVisible(false);
     setPdfError("");
-    setReplaceSuccess("");
-    setReplaceError("");
+    setFeedback({ success: "", error: "" });
     clearPdfUrl();
     loadDocument();
   }, [id]);
@@ -113,13 +125,12 @@ export function DocumentDetailPage() {
     }
 
     const shouldRefreshPreview = isPdfVisible;
-    setReplaceSuccess("");
-    setReplaceError("");
+    setFeedback({ success: "", error: "" });
 
     try {
       setIsReplacingFile(true);
-      const updatedDocument = await replaceDocumentPdf(id, nextFile);
-      setDocument(updatedDocument);
+      await replaceDocumentPdf(id, nextFile);
+      await refreshDocumentDetails();
       clearPdfUrl();
       setPdfError("");
 
@@ -133,14 +144,32 @@ export function DocumentDetailPage() {
         setIsPdfVisible(false);
       }
 
-      setReplaceSuccess("تم استبدال ملف PDF بنجاح.");
+      setFeedback({ success: "تم استبدال ملف PDF بنجاح.", error: "" });
     } catch (requestError) {
-      const fileMessage = requestError?.response?.data?.file?.[0];
-      const detail = requestError?.response?.data?.detail;
-      setReplaceError(fileMessage || (Array.isArray(detail) ? detail[0] : detail) || "تعذر استبدال ملف PDF.");
+      setFeedback({
+        success: "",
+        error: getErrorMessage(requestError, "تعذر استبدال ملف PDF."),
+      });
     } finally {
       input.value = "";
       setIsReplacingFile(false);
+    }
+  }
+
+  async function handleResubmit() {
+    try {
+      setIsSubmittingReview(true);
+      setFeedback({ success: "", error: "" });
+      await submitDocument(id);
+      await refreshDocumentDetails();
+      setFeedback({ success: "تمت إعادة إرسال الوثيقة للمراجعة بنجاح.", error: "" });
+    } catch (requestError) {
+      setFeedback({
+        success: "",
+        error: getErrorMessage(requestError, "تعذر إعادة إرسال الوثيقة للمراجعة."),
+      });
+    } finally {
+      setIsSubmittingReview(false);
     }
   }
 
@@ -156,15 +185,76 @@ export function DocumentDetailPage() {
     return <EmptyBlock message="الوثيقة غير موجودة." />;
   }
 
+  const isRejected = document.status === "rejected";
+  const isDocumentCreator = user?.id === document.created_by;
+  const isCreatorDataEntry = user?.role === "data_entry" && isDocumentCreator;
+  const rejectionReason = document.rejection_reason?.trim() || "لا يوجد سبب رفض مسجل";
+  const compactRejectionReason = isRejected
+    ? document.rejection_reason?.trim()
+      ? "مذكور في تنبيه الرفض أعلاه."
+      : "لا يوجد سبب رفض مسجل"
+    : document.rejection_reason || "-";
   const canReplacePdf =
     user?.role === "data_entry" &&
-    user?.id === document.created_by &&
+    isDocumentCreator &&
     !document.is_deleted &&
-    (document.status === "draft" || document.status === "rejected");
+    (document.status === "draft" || isRejected);
+  const canShowRejectedActions = isRejected && isCreatorDataEntry && !document.is_deleted;
+  const shouldShowWorkflowActions = !(isRejected && user?.role === "data_entry");
+  const canEditDocument =
+    !document.is_deleted &&
+    (user?.role === "admin" || (user?.role === "data_entry" && isDocumentCreator)) &&
+    (document.status === "draft" || isRejected);
 
   return (
     <section>
       <PageHeader title="تفاصيل الوثيقة" subtitle="معلومات الوثيقة وسير العمل المرتبط بها." />
+      <input
+        ref={fileInputRef}
+        type="file"
+        accept="application/pdf,.pdf"
+        style={{ display: "none" }}
+        onChange={handleReplaceFileChange}
+      />
+      <AlertMessage type="success" message={feedback.success} />
+      <AlertMessage type="error" message={feedback.error} />
+
+      {isRejected ? (
+        <div className="card rejection-card">
+          <div className="rejection-card__header">
+            <h3 className="rejection-card__title">تم رفض هذه الوثيقة</h3>
+            <StatusBadge status={document.status} />
+          </div>
+          <div className="rejection-card__reason">
+            <span className="rejection-card__label">سبب الرفض</span>
+            <p>{rejectionReason}</p>
+          </div>
+          <p className="rejection-card__helper">
+            يرجى تعديل الوثيقة أو استبدال ملف الـ PDF ثم إعادة إرسالها للمراجعة.
+          </p>
+          {canShowRejectedActions ? (
+            <div className="rejection-card__actions">
+              <button
+                type="button"
+                className="btn-secondary"
+                onClick={handleReplaceClick}
+                disabled={isReplacingFile || isSubmittingReview}
+              >
+                {isReplacingFile ? "جارٍ استبدال الملف..." : "استبدال ملف PDF"}
+              </button>
+              <button
+                type="button"
+                className="btn-primary"
+                onClick={handleResubmit}
+                disabled={isReplacingFile || isSubmittingReview}
+              >
+                {isSubmittingReview ? "جارٍ إعادة الإرسال..." : "إعادة الإرسال للمراجعة"}
+              </button>
+            </div>
+          ) : null}
+        </div>
+      ) : null}
+
       <div className="card details-grid">
         <p>
           <strong>رقم الوثيقة:</strong> {document.doc_number}
@@ -207,7 +297,7 @@ export function DocumentDetailPage() {
           <strong>تاريخ المراجعة:</strong> {formatDate(document.reviewed_at)}
         </p>
         <p>
-          <strong>سبب الرفض:</strong> {document.rejection_reason || "-"}
+          <strong>سبب الرفض:</strong> <span className={isRejected ? "muted" : undefined}>{compactRejectionReason}</span>
         </p>
         <p>
           <strong>الحذف المنطقي:</strong> {document.is_deleted ? "نعم" : "لا"}
@@ -219,18 +309,11 @@ export function DocumentDetailPage() {
           <strong>ملاحظات:</strong> {document.notes || "-"}
         </p>
         <div className="full-row" style={{ marginTop: "1rem" }}>
-          <input
-            ref={fileInputRef}
-            type="file"
-            accept="application/pdf,.pdf"
-            style={{ display: "none" }}
-            onChange={handleReplaceFileChange}
-          />
           <div style={{ display: "flex", gap: "0.75rem", flexWrap: "wrap", alignItems: "center" }}>
             <button type="button" className="btn-secondary" onClick={handlePdfToggle} disabled={isPdfLoading}>
               {isPdfVisible ? "إخفاء ملف PDF" : "عرض ملف PDF"}
             </button>
-            {canReplacePdf ? (
+            {canReplacePdf && !isRejected ? (
               <button
                 type="button"
                 className="btn-secondary"
@@ -246,8 +329,6 @@ export function DocumentDetailPage() {
               </a>
             ) : null}
           </div>
-          {replaceSuccess ? <AlertMessage type="success" message={replaceSuccess} /> : null}
-          {replaceError ? <AlertMessage type="error" message={replaceError} /> : null}
           {pdfError ? <AlertMessage type="error" message={pdfError} /> : null}
           {isPdfVisible ? (
             <div
@@ -281,7 +362,7 @@ export function DocumentDetailPage() {
           ) : null}
         </div>
 
-        {document.status === "draft" || document.status === "rejected" ? (
+        {canEditDocument ? (
           <p className="full-row" style={{ marginTop: "1rem" }}>
             <Link to={`/documents/${document.id}/edit`} className="button">
               تعديل الوثيقة
@@ -290,12 +371,16 @@ export function DocumentDetailPage() {
         ) : null}
       </div>
 
-      <DocumentWorkflowActions
-        document={document}
-        onDocumentChanged={(updated) => {
-          setDocument(updated);
-        }}
-      />
+      {shouldShowWorkflowActions ? (
+        <DocumentWorkflowActions
+          document={document}
+          hideSubmitAction={isRejected}
+          onDocumentChanged={(updated) => {
+            setDocument(updated);
+            setFeedback({ success: "", error: "" });
+          }}
+        />
+      ) : null}
     </section>
   );
 }

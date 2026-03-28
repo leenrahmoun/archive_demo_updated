@@ -140,6 +140,60 @@ button:disabled {
   margin-bottom: 1rem;
 }
 
+.rejection-card {
+  border: 1px solid #f2c2bd;
+  border-right: 6px solid #c24141;
+  background: linear-gradient(180deg, #fff7f6 0%, #ffffff 100%);
+  box-shadow: 0 10px 24px rgba(163, 44, 44, 0.12);
+}
+
+.rejection-card__header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 0.75rem;
+  flex-wrap: wrap;
+  margin-bottom: 0.85rem;
+}
+
+.rejection-card__title {
+  margin: 0;
+  color: #8f1f1f;
+  font-size: 1.15rem;
+}
+
+.rejection-card__reason {
+  background: #fff;
+  border: 1px solid #f0d2cf;
+  border-radius: 10px;
+  padding: 0.85rem 1rem;
+  margin-bottom: 0.85rem;
+}
+
+.rejection-card__label {
+  display: block;
+  font-weight: 700;
+  color: #8f1f1f;
+  margin-bottom: 0.35rem;
+}
+
+.rejection-card__reason p {
+  margin: 0;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.rejection-card__helper {
+  margin: 0 0 1rem;
+  color: #694036;
+}
+
+.rejection-card__actions {
+  display: flex;
+  gap: 0.75rem;
+  flex-wrap: wrap;
+}
+
 .page-header {
   margin-bottom: 0.9rem;
 }
@@ -319,6 +373,176 @@ textarea {
   background: #f7fbff;
 }
 
+.table-wrapper {
+  overflow-x: auto;
+}
+
+.form-field {
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+}
+
+.form-field span:first-child {
+  font-weight: 600;
+  color: #1f3b5b;
+}
+
+.form-field small {
+  line-height: 1.5;
+}
+
+.form-field--checkbox {
+  justify-content: space-between;
+}
+
+.checkbox-row {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.55rem;
+  min-height: 42px;
+}
+
+.user-management-grid {
+  display: grid;
+  grid-template-columns: minmax(320px, 420px) minmax(280px, 1fr);
+  gap: 1rem;
+  margin-bottom: 1rem;
+}
+
+.control-panel-card__header {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 1rem;
+  margin-bottom: 0.9rem;
+}
+
+.control-panel-card__header h3 {
+  margin: 0 0 0.25rem;
+  color: #12345a;
+}
+
+.control-panel-card__header p {
+  margin: 0;
+}
+
+.control-panel-card--accent {
+  border: 1px solid #cfe1fb;
+  background: linear-gradient(180deg, #f7fbff 0%, #ffffff 100%);
+}
+
+.control-panel-rules {
+  display: grid;
+  gap: 0.85rem;
+}
+
+.control-panel-rules p {
+  margin: 0;
+  color: #23415f;
+  line-height: 1.7;
+}
+
+.control-panel-rules__meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.75rem;
+  padding-top: 0.35rem;
+  color: #47617e;
+  font-weight: 600;
+}
+
+.user-editor-form {
+  display: grid;
+  gap: 1rem;
+}
+
+.user-editor-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.75rem;
+}
+
+.user-cell {
+  display: grid;
+  gap: 0.2rem;
+}
+
+.user-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+}
+
+.role-chip,
+.state-pill {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 999px;
+  padding: 0.25rem 0.7rem;
+  font-size: 0.85rem;
+  font-weight: 700;
+  border: 1px solid transparent;
+  white-space: nowrap;
+}
+
+.role-chip--admin {
+  background: #fff1f1;
+  color: #a32626;
+  border-color: #f7c8c8;
+}
+
+.role-chip--auditor {
+  background: #edf4ff;
+  color: #1d4c9d;
+  border-color: #c9daf8;
+}
+
+.role-chip--data_entry {
+  background: #fff5de;
+  color: #975a16;
+  border-color: #f2d69b;
+}
+
+.role-chip--reader {
+  background: #f4f6f8;
+  color: #4b5d71;
+  border-color: #d7dfe8;
+}
+
+.state-pill--active {
+  background: #e9f9ef;
+  color: #1f7a3f;
+  border-color: #b8e2c7;
+}
+
+.state-pill--inactive {
+  background: #f9ecec;
+  color: #a33434;
+  border-color: #efc7c7;
+}
+
+.modal-backdrop {
+  position: fixed;
+  inset: 0;
+  background: rgba(16, 42, 67, 0.45);
+  display: grid;
+  place-items: center;
+  padding: 1rem;
+  z-index: 20;
+}
+
+.modal-card {
+  width: min(720px, 100%);
+  max-height: calc(100vh - 2rem);
+  overflow-y: auto;
+  background: #fff;
+  border-radius: 14px;
+  padding: 1.15rem;
+  box-shadow: 0 18px 48px rgba(12, 34, 64, 0.18);
+}
+
 @media (max-width: 900px) {
   .app-shell {
     grid-template-columns: 1fr;
@@ -331,6 +555,14 @@ textarea {
   .sidebar nav {
     flex-direction: row;
     flex-wrap: wrap;
+  }
+
+  .user-management-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .control-panel-card__header {
+    flex-direction: column;
   }
 }
 

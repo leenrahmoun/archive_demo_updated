@@ -54,7 +54,14 @@ export default function App() {
         />
         <Route path="/documents" element={<DocumentsListPage />} />
         <Route path="/documents/:id" element={<DocumentDetailPage />} />
-        <Route path="/documents/:id/edit" element={<DocumentFormPage />} />
+        <Route
+          path="/documents/:id/edit"
+          element={
+            <RoleGuard allowedRoles={["admin", "data_entry"]}>
+              <DocumentFormPage />
+            </RoleGuard>
+          }
+        />
         <Route
           path="/audit-logs"
           element={

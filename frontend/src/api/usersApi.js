@@ -1,21 +1,26 @@
 import { api } from "./http";
 
-export const getUsers = (params = {}) => {
-  return api.get("/api/users/", { params });
-};
+export async function getUsers(params = {}) {
+  const response = await api.get("/api/users/", { params });
+  return response.data;
+}
 
-export const getUserById = (id) => {
-  return api.get(`/api/users/${id}/`);
-};
+export async function getUserById(id) {
+  const response = await api.get(`/api/users/${id}/`);
+  return response.data;
+}
 
-export const createUser = (data) => {
-  return api.post("/api/users/", data);
-};
+export async function createUser(data) {
+  const response = await api.post("/api/users/", data);
+  return response.data;
+}
 
-export const updateUser = (id, data) => {
-  return api.put(`/api/users/${id}/`, data);
-};
+export async function updateUser(id, data) {
+  const response = await api.put(`/api/users/${id}/`, data);
+  return response.data;
+}
 
-export const deleteUser = (id) => {
-  return api.delete(`/api/users/${id}/`);
-};
+export async function deleteUser(id) {
+  const response = await api.delete(`/api/users/${id}/`);
+  return response.data;
+}

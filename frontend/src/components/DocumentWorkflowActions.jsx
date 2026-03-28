@@ -4,7 +4,7 @@ import { useAuth } from "../auth/useAuth";
 import { flattenErrors } from "../utils/errors";
 import { AlertMessage } from "./AlertMessage";
 
-function getActionState(role, document) {
+function getActionState(role, document, { hideSubmitAction = false } = {}) {
   const status = document?.status;
   const isDeleted = Boolean(document?.is_deleted);
 
@@ -13,7 +13,7 @@ function getActionState(role, document) {
   const canDeleteRole = role === "admin" || role === "data_entry";
 
   return {
-    showSubmit: canSubmitRole,
+    showSubmit: canSubmitRole && !hideSubmitAction,
     submitEnabled: canSubmitRole && !isDeleted && (status === "draft" || status === "rejected"),
     showApprove: canReviewRole,
     approveEnabled: canReviewRole && !isDeleted && status === "pending",
@@ -24,14 +24,17 @@ function getActionState(role, document) {
   };
 }
 
-export function DocumentWorkflowActions({ document, onDocumentChanged }) {
+export function DocumentWorkflowActions({ document, onDocumentChanged, hideSubmitAction = false }) {
   const { user } = useAuth();
   const [feedback, setFeedback] = useState({ success: "", error: "" });
   const [isWorking, setIsWorking] = useState(false);
   const [isRejectOpen, setIsRejectOpen] = useState(false);
   const [rejectReason, setRejectReason] = useState("");
 
-  const actionState = useMemo(() => getActionState(user?.role, document), [user?.role, document]);
+  const actionState = useMemo(
+    () => getActionState(user?.role, document, { hideSubmitAction }),
+    [hideSubmitAction, user?.role, document]
+  );
   const hasAnyActions = actionState.showSubmit || actionState.showApprove || actionState.showReject || actionState.showDelete;
   const status = document?.status;
   const isDeleted = Boolean(document?.is_deleted);

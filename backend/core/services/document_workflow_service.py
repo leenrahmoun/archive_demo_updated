@@ -26,6 +26,8 @@ def _audit(user: User, action: str, document: Document, old_values: dict, new_va
 def submit_document(*, actor: User, document: Document) -> Document:
     if actor.role not in {UserRole.ADMIN, UserRole.DATA_ENTRY}:
         raise WorkflowError("You do not have permission to submit documents.")
+    if actor.role == UserRole.DATA_ENTRY and actor.assigned_auditor_id is None:
+        raise WorkflowError("Data entry users must be assigned to an auditor before submitting documents.")
     if document.status not in {DocumentStatus.DRAFT, DocumentStatus.REJECTED}:
         raise WorkflowError("Only draft or rejected documents can be submitted.")
     if document.is_deleted:
@@ -51,6 +53,8 @@ def submit_document(*, actor: User, document: Document) -> Document:
 def approve_document(*, actor: User, document: Document) -> Document:
     if actor.role not in {UserRole.ADMIN, UserRole.AUDITOR}:
         raise WorkflowError("You do not have permission to approve documents.")
+    if actor.role == UserRole.AUDITOR and document.created_by.assigned_auditor_id != actor.id:
+        raise WorkflowError("You do not have access to review this document.")
     if document.status != DocumentStatus.PENDING:
         raise WorkflowError("Only pending documents can be approved.")
     if document.is_deleted:
@@ -82,6 +86,8 @@ def approve_document(*, actor: User, document: Document) -> Document:
 def reject_document(*, actor: User, document: Document, rejection_reason: str) -> Document:
     if actor.role not in {UserRole.ADMIN, UserRole.AUDITOR}:
         raise WorkflowError("You do not have permission to reject documents.")
+    if actor.role == UserRole.AUDITOR and document.created_by.assigned_auditor_id != actor.id:
+        raise WorkflowError("You do not have access to review this document.")
     if document.status != DocumentStatus.PENDING:
         raise WorkflowError("Only pending documents can be rejected.")
     if document.is_deleted:

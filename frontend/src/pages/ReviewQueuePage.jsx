@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { Link } from "react-router-dom";
 import { useAuth } from "../auth/useAuth";
 import { getAuditorReviewQueue } from "../api/documentsApi";
+import { AlertMessage } from "../components/AlertMessage";
 import { PageHeader } from "../components/PageHeader";
 import { PaginationControls } from "../components/PaginationControls";
 import { EmptyBlock, LoadingBlock } from "../components/StateBlock";
@@ -51,33 +52,34 @@ export function ReviewQueuePage() {
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState("");
   const [page, setPage] = useState(1);
-  const [pageSize, setPageSize] = useState(DEFAULT_PAGE_SIZE);
   const [count, setCount] = useState(0);
   const [nextPage, setNextPage] = useState(null);
   const [prevPage, setPrevPage] = useState(null);
+  const pageSize = DEFAULT_PAGE_SIZE;
+  const isAdmin = user?.role === "admin";
 
   useEffect(() => {
-    fetchReviewQueue();
-  }, [page, pageSize]);
-
-  const fetchReviewQueue = async () => {
-    try {
-      setIsLoading(true);
-      const response = await getAuditorReviewQueue({
-        page,
-        page_size: pageSize,
-      });
-      setDocuments(response.results || []);
-      setCount(response.count || 0);
-      setNextPage(response.next);
-      setPrevPage(response.previous);
-      setError("");
-    } catch (err) {
-      setError("تعذر تحميل قائمة المراجعة.");
-    } finally {
-      setIsLoading(false);
+    async function loadReviewQueue() {
+      try {
+        setIsLoading(true);
+        const response = await getAuditorReviewQueue({
+          page,
+          page_size: pageSize,
+        });
+        setDocuments(response.results || []);
+        setCount(response.count || 0);
+        setNextPage(response.next);
+        setPrevPage(response.previous);
+        setError("");
+      } catch {
+        setError("تعذر تحميل قائمة المراجعة.");
+      } finally {
+        setIsLoading(false);
+      }
     }
-  };
+
+    loadReviewQueue();
+  }, [page, pageSize]);
 
   const totalPages = Math.max(1, Math.ceil(count / pageSize));
 
@@ -96,14 +98,11 @@ export function ReviewQueuePage() {
     <section>
       <PageHeader
         title="قائمة المراجعة"
-        subtitle="الوثائق المعلقة بانتظار المراجعة"
+        subtitle={isAdmin ? "جميع الوثائق المعلقة بانتظار المراجعة" : "الوثائق المعلقة ضمن نطاق المراجعة الخاص بك"}
       />
+      {!isAdmin ? <AlertMessage type="info" message="يعرض هذا الطابور الوثائق المعلقة الخاصة بمدخلي البيانات المرتبطين بك فقط." /> : null}
 
-      {error && (
-        <div className="alert alert-error" style={{ marginBottom: "1rem" }}>
-          {error}
-        </div>
-      )}
+      <AlertMessage type="error" message={error} />
 
       {isLoading ? (
         <LoadingBlock />
@@ -155,12 +154,7 @@ export function ReviewQueuePage() {
                     )}
                   </td>
                   <td>
-                    <Link
-                      to={`/documents/${doc.id}`}
-                      className="btn btn-sm"
-                    >
-                      مراجعة
-                    </Link>
+                    <Link to={`/documents/${doc.id}`}>{isAdmin ? "عرض" : "مراجعة"}</Link>
                   </td>
                 </tr>
               ))}

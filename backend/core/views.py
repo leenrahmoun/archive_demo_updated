@@ -10,6 +10,13 @@ from rest_framework.response import Response
 from rest_framework.views import APIView
 from django.utils import timezone
 
+from core.access import (
+    get_document_detail_queryset_for_user,
+    get_document_queryset_for_user,
+    get_document_review_scope_queryset_for_user,
+    get_dossier_queryset_for_user,
+    get_review_queue_queryset_for_user,
+)
 from core.models import AuditLog, Document, DocumentStatus, DocumentType, Dossier, Governorate, User, UserRole
 from core.permissions import AdminOnlyPermission, AuditLogPermission, DocumentPermission, DossierPermission, DocumentWorkflowPermission
 from core.serializers import (
@@ -44,17 +51,6 @@ class StandardListPagination(PageNumberPagination):
     max_page_size = 100
 
 
-def get_document_detail_queryset_for_user(user):
-    queryset = Document.objects.filter(is_deleted=False)
-    if user.role == UserRole.READER:
-        return queryset.filter(status=DocumentStatus.APPROVED)
-    if user.role == UserRole.AUDITOR:
-        return queryset.filter(status__in=[DocumentStatus.PENDING, DocumentStatus.APPROVED])
-    if user.role == UserRole.DATA_ENTRY:
-        return queryset.filter(created_by=user)
-    return queryset
-
-
 class DossierListCreateAPIView(generics.ListCreateAPIView):
     permission_classes = [DossierPermission]
     parser_classes = [JSONParser, FormParser, MultiPartParser]
@@ -66,10 +62,7 @@ class DossierListCreateAPIView(generics.ListCreateAPIView):
     ordering = ["-created_at", "-id"]
 
     def get_queryset(self):
-        queryset = super().get_queryset()
-        user = self.request.user
-        if user.role == UserRole.DATA_ENTRY:
-            queryset = queryset.filter(created_by=user)
+        queryset = get_dossier_queryset_for_user(self.request.user).order_by("-created_at", "-id")
 
         query_params = self.request.query_params
 
@@ -134,11 +127,7 @@ class DossierRetrieveAPIView(generics.RetrieveAPIView):
     serializer_class = DossierDetailSerializer
 
     def get_queryset(self):
-        user = self.request.user
-        queryset = Dossier.objects.all()
-        if user.role == UserRole.DATA_ENTRY:
-            return queryset.filter(created_by=user)
-        return queryset
+        return get_dossier_queryset_for_user(self.request.user)
 
 
 class DocumentListAPIView(generics.ListCreateAPIView):
@@ -158,24 +147,18 @@ class DocumentListAPIView(generics.ListCreateAPIView):
 
     def get_queryset(self):
         user = self.request.user
-        queryset = Document.objects.filter(is_deleted=False).order_by("-created_at", "-id")
-        if user.role == UserRole.READER:
-            queryset = queryset.filter(status=DocumentStatus.APPROVED)
-        elif user.role == UserRole.AUDITOR:
-            # Auditor sees only documents from their assigned data_entry users
-            # Statuses: pending, rejected, approved (draft excluded)
-            queryset = queryset.filter(
-                created_by__assigned_auditor=user,
-                status__in=[
-                    DocumentStatus.PENDING,
-                    DocumentStatus.REJECTED,
-                    DocumentStatus.APPROVED,
-                ],
-            )
-        elif user.role == UserRole.DATA_ENTRY:
-            queryset = queryset.filter(created_by=user)
-
         query_params = self.request.query_params
+        deleted_state = False
+
+        is_deleted = query_params.get("is_deleted")
+        if is_deleted is not None:
+            lowered = is_deleted.lower()
+            if lowered in {"true", "1"}:
+                deleted_state = True
+            elif lowered in {"false", "0"}:
+                deleted_state = False
+
+        queryset = get_document_queryset_for_user(user, deleted_state=deleted_state).order_by("-created_at", "-id")
 
         status_param = query_params.get("status")
         if status_param:
@@ -198,28 +181,6 @@ class DocumentListAPIView(generics.ListCreateAPIView):
             queryset = queryset.filter(reviewed_by_id=int(reviewed_by))
         elif reviewed_by == "null":
             queryset = queryset.filter(reviewed_by__isnull=True)
-
-        is_deleted = query_params.get("is_deleted")
-        if is_deleted is not None:
-            lowered = is_deleted.lower()
-            if lowered in {"true", "1"}:
-                queryset = Document.objects.filter(is_deleted=True).order_by("-created_at", "-id")
-                if user.role == UserRole.READER:
-                    queryset = queryset.filter(status=DocumentStatus.APPROVED)
-                elif user.role == UserRole.AUDITOR:
-                    # Auditor scoped visibility for deleted documents too
-                    queryset = queryset.filter(
-                        created_by__assigned_auditor=user,
-                        status__in=[
-                            DocumentStatus.PENDING,
-                            DocumentStatus.REJECTED,
-                            DocumentStatus.APPROVED,
-                        ],
-                    )
-                elif user.role == UserRole.DATA_ENTRY:
-                    queryset = queryset.filter(created_by=user)
-            elif lowered in {"false", "0"}:
-                queryset = queryset.filter(is_deleted=False)
 
         return queryset
 
@@ -336,7 +297,7 @@ class DocumentApproveAPIView(APIView):
     workflow_action = "approve"
 
     def post(self, request, pk, *args, **kwargs):
-        document = generics.get_object_or_404(Document, pk=pk, is_deleted=False)
+        document = generics.get_object_or_404(get_document_review_scope_queryset_for_user(request.user), pk=pk)
         try:
             document = approve_document(actor=request.user, document=document)
         except WorkflowError as exc:
@@ -351,7 +312,7 @@ class DocumentRejectAPIView(APIView):
     def post(self, request, pk, *args, **kwargs):
         serializer = DocumentRejectSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
-        document = generics.get_object_or_404(Document, pk=pk, is_deleted=False)
+        document = generics.get_object_or_404(get_document_review_scope_queryset_for_user(request.user), pk=pk)
         try:
             document = reject_document(
                 actor=request.user,
@@ -453,7 +414,7 @@ class UserManagementListCreateAPIView(generics.ListCreateAPIView):
     ordering = ["-date_joined"]
 
     def get_queryset(self):
-        queryset = User.objects.all().order_by("-date_joined", "-id")
+        queryset = User.objects.select_related("assigned_auditor").all().order_by("-date_joined", "-id")
 
         role = self.request.query_params.get("role")
         if role:
@@ -481,7 +442,7 @@ class UserManagementRetrieveUpdateDestroyAPIView(generics.RetrieveUpdateDestroyA
     """Admin-only endpoint for retrieving, updating and deleting users."""
     permission_classes = [IsAuthenticated, AdminOnlyPermission]
     serializer_class = UserManagementSerializer
-    queryset = User.objects.all()
+    queryset = User.objects.select_related("assigned_auditor").all()
 
 
 class AuditorReviewQueueAPIView(generics.ListAPIView):
@@ -495,19 +456,8 @@ class AuditorReviewQueueAPIView(generics.ListAPIView):
     ordering = ["-created_at"]
 
     def get_queryset(self):
-        user = self.request.user
-        # Admin sees all pending documents
-        if user.role == UserRole.ADMIN:
-            return Document.objects.filter(
-                is_deleted=False,
-                status=DocumentStatus.PENDING,
-            ).select_related("dossier", "doc_type", "created_by").order_by("-created_at", "-id")
-        # Auditor sees only pending documents from assigned data_entry users
-        if user.role == UserRole.AUDITOR:
-            return Document.objects.filter(
-                is_deleted=False,
-                created_by__assigned_auditor=user,
-                status=DocumentStatus.PENDING,
-            ).select_related("dossier", "doc_type", "created_by").order_by("-created_at", "-id")
-        # Other roles see nothing
-        return Document.objects.none()
+        return (
+            get_review_queue_queryset_for_user(self.request.user)
+            .select_related("dossier", "doc_type", "created_by")
+            .order_by("-created_at", "-id")
+        )

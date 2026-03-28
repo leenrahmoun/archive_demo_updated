@@ -194,7 +194,10 @@ class DocumentWorkflowApiTests(APITestCase):
         self.admin = User.objects.create_user(username="admin", password="pass12345", role=UserRole.ADMIN)
         self.data_entry = User.objects.create_user(username="entry2", password="pass12345", role=UserRole.DATA_ENTRY)
         self.auditor = User.objects.create_user(username="auditor", password="pass12345", role=UserRole.AUDITOR)
+        self.other_auditor = User.objects.create_user(username="auditor_other", password="pass12345", role=UserRole.AUDITOR)
         self.reader = User.objects.create_user(username="reader", password="pass12345", role=UserRole.READER)
+        self.data_entry.assigned_auditor = self.auditor
+        self.data_entry.save()
 
         self.doc_type = DocumentType.objects.create(
             name="قرار",
@@ -324,6 +327,26 @@ class DocumentWorkflowApiTests(APITestCase):
         response = self.client.post(f"/api/documents/{self.document.id}/submit/", {}, format="json")
         self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
 
+    def test_auditor_cannot_review_document_outside_assignment(self):
+        self.document.status = DocumentStatus.PENDING
+        self.document.save(update_fields=["status", "updated_at"])
+
+        self.client.force_authenticate(user=self.other_auditor)
+        response = self.client.post(f"/api/documents/{self.document.id}/approve/", {}, format="json")
+        self.assertEqual(response.status_code, status.HTTP_404_NOT_FOUND)
+
+    def test_submit_requires_assigned_auditor_for_data_entry(self):
+        self.data_entry.assigned_auditor = None
+        self.data_entry.save()
+
+        self.client.force_authenticate(user=self.data_entry)
+        response = self.client.post(f"/api/documents/{self.document.id}/submit/", {}, format="json")
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertEqual(
+            response.data["detail"],
+            "Data entry users must be assigned to an auditor before submitting documents.",
+        )
+
 
 class AuditLogApiTests(APITestCase):
     def setUp(self):
@@ -435,6 +458,9 @@ class DossierListQueryApiTests(APITestCase):
     def setUp(self):
         self.admin = User.objects.create_user(username="d_admin", password="pass12345", role=UserRole.ADMIN)
         self.data_entry = User.objects.create_user(username="d_entry", password="pass12345", role=UserRole.DATA_ENTRY)
+        self.auditor = User.objects.create_user(username="d_auditor", password="pass12345", role=UserRole.AUDITOR)
+        self.data_entry.assigned_auditor = self.auditor
+        self.data_entry.save()
         self.g1 = Governorate.objects.create(name="Damascus", is_active=True)
         self.g2 = Governorate.objects.create(name="Homs", is_active=True)
 
@@ -484,6 +510,13 @@ class DossierListQueryApiTests(APITestCase):
 
     def test_data_entry_sees_only_own_dossiers(self):
         self.client.force_authenticate(user=self.data_entry)
+        response = self.client.get("/api/dossiers/")
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response.data["count"], 1)
+        self.assertEqual(response.data["results"][0]["id"], self.d2.id)
+
+    def test_auditor_sees_only_assigned_data_entry_dossiers(self):
+        self.client.force_authenticate(user=self.auditor)
         response = self.client.get("/api/dossiers/")
         self.assertEqual(response.status_code, status.HTTP_200_OK)
         self.assertEqual(response.data["count"], 1)
@@ -783,6 +816,30 @@ class DocumentCreateUpdateApiTests(TemporaryMediaRootMixin, APITestCase):
         self.assertEqual(res.status_code, status.HTTP_400_BAD_REQUEST)
         self.assertIn("dossier", res.data)
 
+    def test_data_entry_cannot_create_document_on_others_dossier(self):
+        other_user = User.objects.create_user(username="create_other_owner", password="pass12345", role=UserRole.DATA_ENTRY)
+        other_dossier = Dossier.objects.create(
+            file_number="DOS-CU-003",
+            full_name="Other Owner",
+            national_id="N-CU-3",
+            personal_id="P-CU-3",
+            room_number="1",
+            column_number="1",
+            shelf_number="1",
+            created_by=other_user,
+        )
+
+        payload = {
+            "dossier": str(other_dossier.id),
+            "doc_type": str(self.doc_type_1.id),
+            "doc_number": "NEW-DOC-OTHER",
+            "doc_name": "Other Dossier Document",
+            "file": self.make_uploaded_pdf(name="new_doc_other.pdf", size_kb=200),
+        }
+        res = self.client.post("/api/documents/", payload, format="multipart")
+        self.assertEqual(res.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn("dossier", res.data)
+
     def test_update_draft_document_success(self):
         doc = Document.objects.create(
             dossier=self.dossier_1,
@@ -1029,6 +1086,7 @@ class DocumentFileAccessApiTests(TemporaryMediaRootMixin, APITestCase):
             role=UserRole.DATA_ENTRY,
         )
         self.auditor = User.objects.create_user(username="file_auditor", password="pass12345", role=UserRole.AUDITOR)
+        self.other_auditor = User.objects.create_user(username="file_auditor_other", password="pass12345", role=UserRole.AUDITOR)
         self.reader = User.objects.create_user(username="file_reader", password="pass12345", role=UserRole.READER)
 
         self.doc_type = DocumentType.objects.create(
@@ -1127,6 +1185,51 @@ class DocumentFileAccessApiTests(TemporaryMediaRootMixin, APITestCase):
         pending_response = self.client.get(f"/api/documents/{pending_document.id}/file/")
         self.assertEqual(pending_response.status_code, status.HTTP_404_NOT_FOUND)
 
+    def test_auditor_can_access_scoped_pending_rejected_and_approved_document_files(self):
+        self.data_entry.assigned_auditor = self.auditor
+        self.data_entry.save()
+
+        documents = [
+            self.create_document_with_file(
+                created_by=self.data_entry,
+                dossier=self.dossier,
+                status_value=DocumentStatus.PENDING,
+                name="auditor-pending",
+            ),
+            self.create_document_with_file(
+                created_by=self.data_entry,
+                dossier=self.dossier,
+                status_value=DocumentStatus.REJECTED,
+                name="auditor-rejected",
+            ),
+            self.create_document_with_file(
+                created_by=self.data_entry,
+                dossier=self.dossier,
+                status_value=DocumentStatus.APPROVED,
+                name="auditor-approved",
+            ),
+        ]
+
+        self.client.force_authenticate(user=self.auditor)
+        for document in documents:
+            response = self.client.get(f"/api/documents/{document.id}/file/")
+            self.assertEqual(response.status_code, status.HTTP_200_OK)
+            self.assertEqual(response["Content-Type"], "application/pdf")
+
+    def test_auditor_cannot_access_document_file_outside_assignment(self):
+        self.other_data_entry.assigned_auditor = self.other_auditor
+        self.other_data_entry.save()
+        document = self.create_document_with_file(
+            created_by=self.other_data_entry,
+            dossier=self.other_dossier,
+            status_value=DocumentStatus.PENDING,
+            name="auditor-outside",
+        )
+
+        self.client.force_authenticate(user=self.auditor)
+        response = self.client.get(f"/api/documents/{document.id}/file/")
+        self.assertEqual(response.status_code, status.HTTP_404_NOT_FOUND)
+
     def test_missing_physical_file_returns_404(self):
         document = Document.objects.create(
             dossier=self.dossier,
@@ -1166,6 +1269,12 @@ class UserAssignedAuditorLinkageTests(APITestCase):
         self.data_entry.save()
         self.data_entry.refresh_from_db()
         self.assertEqual(self.data_entry.assigned_auditor_id, self.auditor.id)
+
+    def test_data_entry_cannot_be_assigned_to_non_auditor(self):
+        self.data_entry.assigned_auditor = self.admin
+        with self.assertRaises(ValidationError) as ctx:
+            self.data_entry.full_clean()
+        self.assertIn("assigned_auditor", ctx.exception.message_dict)
 
     def test_auditor_cannot_have_assigned_auditor(self):
         """Auditor user cannot have an assigned auditor (validation error)."""
@@ -1284,20 +1393,17 @@ class SeedLookupsCommandTests(APITestCase):
 
 
 class DossierDetailDocumentVisibilityTests(APITestCase):
-    """
-    Verify that GET /api/dossiers/{id}/ returns only the documents
-    each role is permitted to see, after the DossierDetailSerializer fix.
-
-    Fixture: one dossier with four non-deleted documents (draft, pending,
-    approved, rejected) plus one soft-deleted approved document that no
-    role should see.
-    """
-
     def setUp(self):
         self.admin = User.objects.create_user(username="vis_admin", password="pass12345", role=UserRole.ADMIN)
         self.data_entry = User.objects.create_user(username="vis_entry", password="pass12345", role=UserRole.DATA_ENTRY)
+        self.other_data_entry = User.objects.create_user(username="vis_entry_other", password="pass12345", role=UserRole.DATA_ENTRY)
         self.auditor = User.objects.create_user(username="vis_auditor", password="pass12345", role=UserRole.AUDITOR)
+        self.other_auditor = User.objects.create_user(username="vis_auditor_other", password="pass12345", role=UserRole.AUDITOR)
         self.reader = User.objects.create_user(username="vis_reader", password="pass12345", role=UserRole.READER)
+        self.data_entry.assigned_auditor = self.auditor
+        self.data_entry.save()
+        self.other_data_entry.assigned_auditor = self.other_auditor
+        self.other_data_entry.save()
 
         self.doc_type = DocumentType.objects.create(
             name="Type V",
@@ -1314,7 +1420,17 @@ class DossierDetailDocumentVisibilityTests(APITestCase):
             room_number="1",
             column_number="1",
             shelf_number="1",
-            created_by=self.admin,
+            created_by=self.data_entry,
+        )
+        self.other_dossier = Dossier.objects.create(
+            file_number="VIS-002",
+            full_name="Other Visibility Test",
+            national_id="VIS-N2",
+            personal_id="VIS-P2",
+            room_number="2",
+            column_number="2",
+            shelf_number="2",
+            created_by=self.other_data_entry,
         )
 
         def _doc(number, stat, deleted=False):
@@ -1328,16 +1444,17 @@ class DossierDetailDocumentVisibilityTests(APITestCase):
                 mime_type="application/pdf",
                 status=stat,
                 is_deleted=deleted,
-                created_by=self.admin,
+                created_by=self.data_entry,
             )
 
-        self.doc_draft    = _doc("VIS-DRF", DocumentStatus.DRAFT)
-        self.doc_pending  = _doc("VIS-PEN", DocumentStatus.PENDING)
+        self.doc_draft = _doc("VIS-DRF", DocumentStatus.DRAFT)
+        self.doc_pending = _doc("VIS-PEN", DocumentStatus.PENDING)
         self.doc_approved = _doc("VIS-APP", DocumentStatus.APPROVED)
         self.doc_rejected = _doc("VIS-REJ", DocumentStatus.REJECTED)
-        self.doc_deleted  = _doc("VIS-DEL", DocumentStatus.APPROVED, deleted=True)
+        self.doc_deleted = _doc("VIS-DEL", DocumentStatus.APPROVED, deleted=True)
 
         self.url = f"/api/dossiers/{self.dossier.id}/"
+        self.other_url = f"/api/dossiers/{self.other_dossier.id}/"
 
     def _ids(self, response):
         return {doc["id"] for doc in response.data["documents"]}
@@ -1356,17 +1473,22 @@ class DossierDetailDocumentVisibilityTests(APITestCase):
         self.assertEqual(len(ids), 1)
 
     # ── auditor ─────────────────────────────────────────────────────────────
-    def test_auditor_sees_pending_and_approved(self):
+    def test_auditor_sees_scoped_pending_rejected_and_approved(self):
         self.client.force_authenticate(user=self.auditor)
         response = self.client.get(self.url)
         self.assertEqual(response.status_code, status.HTTP_200_OK)
         ids = self._ids(response)
         self.assertIn(self.doc_pending.id, ids)
         self.assertIn(self.doc_approved.id, ids)
+        self.assertIn(self.doc_rejected.id, ids)
         self.assertNotIn(self.doc_draft.id, ids)
-        self.assertNotIn(self.doc_rejected.id, ids)
         self.assertNotIn(self.doc_deleted.id, ids)
-        self.assertEqual(len(ids), 2)
+        self.assertEqual(len(ids), 3)
+
+    def test_auditor_gets_404_for_unassigned_dossier(self):
+        self.client.force_authenticate(user=self.auditor)
+        response = self.client.get(self.other_url)
+        self.assertEqual(response.status_code, status.HTTP_404_NOT_FOUND)
 
     # ── admin ────────────────────────────────────────────────────────────────
     def test_admin_sees_all_non_deleted(self):
@@ -1384,7 +1506,7 @@ class DossierDetailDocumentVisibilityTests(APITestCase):
     # ── data_entry ───────────────────────────────────────────────────────────
     def test_data_entry_gets_404_for_others_dossier(self):
         self.client.force_authenticate(user=self.data_entry)
-        response = self.client.get(self.url)
+        response = self.client.get(self.other_url)
         self.assertEqual(response.status_code, status.HTTP_404_NOT_FOUND)
 
 
@@ -1419,18 +1541,32 @@ class AdminUserManagementApiTests(APITestCase):
     def test_admin_can_create_user(self):
         """Admin can create new users via POST /api/users/."""
         payload = {
-            "username": "new_entry",
+            "username": "new_reader",
             "password": "newpass123",
             "first_name": "New",
-            "last_name": "Entry",
+            "last_name": "Reader",
             "email": "new@example.com",
-            "role": UserRole.DATA_ENTRY,
+            "role": UserRole.READER,
             "is_active": True,
         }
         response = self.client.post("/api/users/", payload, format="json")
         self.assertEqual(response.status_code, status.HTTP_201_CREATED)
-        self.assertEqual(response.data["username"], "new_entry")
-        self.assertEqual(response.data["role"], UserRole.DATA_ENTRY)
+        self.assertEqual(response.data["username"], "new_reader")
+        self.assertEqual(response.data["role"], UserRole.READER)
+
+    def test_admin_cannot_create_data_entry_without_assigned_auditor(self):
+        payload = {
+            "username": "entry_without_auditor",
+            "password": "newpass123",
+            "first_name": "No",
+            "last_name": "Auditor",
+            "email": "noauditor@example.com",
+            "role": UserRole.DATA_ENTRY,
+            "is_active": True,
+        }
+        response = self.client.post("/api/users/", payload, format="json")
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn("assigned_auditor_id", response.data)
 
     def test_admin_can_create_data_entry_with_assigned_auditor(self):
         """Admin can create data_entry user with assigned_auditor."""
@@ -1495,9 +1631,7 @@ class AdminUserManagementApiTests(APITestCase):
         self.assertEqual(response.status_code, status.HTTP_200_OK)
         self.assertEqual(response.data["assigned_auditor_id"], self.auditor.id)
 
-    def test_admin_can_remove_assigned_auditor(self):
-        """Admin can remove assigned_auditor by setting to null."""
-        # First assign an auditor
+    def test_admin_cannot_remove_assigned_auditor_from_data_entry(self):
         self.data_entry.assigned_auditor = self.auditor
         self.data_entry.save()
 
@@ -1511,8 +1645,8 @@ class AdminUserManagementApiTests(APITestCase):
             "assigned_auditor_id": None,
         }
         response = self.client.put(f"/api/users/{self.data_entry.id}/", payload, format="json")
-        self.assertEqual(response.status_code, status.HTTP_200_OK)
-        self.assertIsNone(response.data["assigned_auditor_id"])
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn("assigned_auditor_id", response.data)
 
     def test_admin_can_filter_users_by_role(self):
         """Admin can filter users by role query parameter."""
@@ -1577,7 +1711,7 @@ class AdminUserManagementApiTests(APITestCase):
             "first_name": "Test",
             "last_name": "User",
             "email": "test@example.com",
-            "role": UserRole.DATA_ENTRY,
+            "role": UserRole.READER,
             "is_active": True,
         }
         response = self.client.post("/api/users/", payload, format="json")
@@ -2000,3 +2134,194 @@ class AuditorScopedDocumentVisibilityTests(APITestCase):
         # Should see only 1 deleted document (from assigned data_entry)
         self.assertEqual(response.data["count"], 1)
         self.assertEqual(response.data["results"][0]["id"], doc_deleted.id)
+
+
+class ScopedReviewQueueApiTests(APITestCase):
+    def setUp(self):
+        self.admin = User.objects.create_user(username="rq_admin", password="pass12345", role=UserRole.ADMIN)
+        self.auditor = User.objects.create_user(username="rq_auditor", password="pass12345", role=UserRole.AUDITOR)
+        self.other_auditor = User.objects.create_user(username="rq_auditor_other", password="pass12345", role=UserRole.AUDITOR)
+        self.data_entry = User.objects.create_user(username="rq_entry", password="pass12345", role=UserRole.DATA_ENTRY)
+        self.other_data_entry = User.objects.create_user(username="rq_entry_other", password="pass12345", role=UserRole.DATA_ENTRY)
+        self.reader = User.objects.create_user(username="rq_reader", password="pass12345", role=UserRole.READER)
+
+        self.data_entry.assigned_auditor = self.auditor
+        self.data_entry.save()
+        self.other_data_entry.assigned_auditor = self.other_auditor
+        self.other_data_entry.save()
+
+        self.doc_type = DocumentType.objects.create(
+            name="Review Queue Doc",
+            slug="review-queue-doc",
+            group_name="review",
+            display_order=1,
+            is_active=True,
+        )
+        self.dossier = Dossier.objects.create(
+            file_number="RQ-001",
+            full_name="Review Queue User",
+            national_id="RQ-N1",
+            personal_id="RQ-P1",
+            room_number="1",
+            column_number="1",
+            shelf_number="1",
+            created_by=self.data_entry,
+        )
+        self.other_dossier = Dossier.objects.create(
+            file_number="RQ-002",
+            full_name="Review Queue User 2",
+            national_id="RQ-N2",
+            personal_id="RQ-P2",
+            room_number="2",
+            column_number="2",
+            shelf_number="2",
+            created_by=self.other_data_entry,
+        )
+
+        self.assigned_pending = Document.objects.create(
+            dossier=self.dossier,
+            doc_type=self.doc_type,
+            doc_number="RQ-PENDING-1",
+            doc_name="Assigned Pending",
+            file_path="archive/rq-pending-1.pdf",
+            file_size_kb=100,
+            status=DocumentStatus.PENDING,
+            created_by=self.data_entry,
+        )
+        self.assigned_approved = Document.objects.create(
+            dossier=self.dossier,
+            doc_type=self.doc_type,
+            doc_number="RQ-APPROVED-1",
+            doc_name="Assigned Approved",
+            file_path="archive/rq-approved-1.pdf",
+            file_size_kb=100,
+            status=DocumentStatus.APPROVED,
+            created_by=self.data_entry,
+        )
+        self.other_pending = Document.objects.create(
+            dossier=self.other_dossier,
+            doc_type=self.doc_type,
+            doc_number="RQ-PENDING-2",
+            doc_name="Other Pending",
+            file_path="archive/rq-pending-2.pdf",
+            file_size_kb=100,
+            status=DocumentStatus.PENDING,
+            created_by=self.other_data_entry,
+        )
+
+    def test_assigned_auditor_sees_only_their_pending_queue(self):
+        self.client.force_authenticate(user=self.auditor)
+        response = self.client.get("/api/auditor/review-queue/")
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response.data["count"], 1)
+        self.assertEqual(response.data["results"][0]["id"], self.assigned_pending.id)
+
+    def test_other_auditor_cannot_see_unrelated_queue_items(self):
+        self.client.force_authenticate(user=self.other_auditor)
+        response = self.client.get("/api/auditor/review-queue/")
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response.data["count"], 1)
+        self.assertEqual(response.data["results"][0]["id"], self.other_pending.id)
+
+    def test_admin_sees_all_pending_queue_items(self):
+        self.client.force_authenticate(user=self.admin)
+        response = self.client.get("/api/auditor/review-queue/")
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        ids = {item["id"] for item in response.data["results"]}
+        self.assertEqual(ids, {self.assigned_pending.id, self.other_pending.id})
+
+
+class DocumentDetailScopeApiTests(APITestCase):
+    def setUp(self):
+        self.admin = User.objects.create_user(username="dd_admin", password="pass12345", role=UserRole.ADMIN)
+        self.auditor = User.objects.create_user(username="dd_auditor", password="pass12345", role=UserRole.AUDITOR)
+        self.other_auditor = User.objects.create_user(username="dd_auditor_other", password="pass12345", role=UserRole.AUDITOR)
+        self.data_entry = User.objects.create_user(username="dd_entry", password="pass12345", role=UserRole.DATA_ENTRY)
+        self.other_data_entry = User.objects.create_user(username="dd_entry_other", password="pass12345", role=UserRole.DATA_ENTRY)
+
+        self.data_entry.assigned_auditor = self.auditor
+        self.data_entry.save()
+        self.other_data_entry.assigned_auditor = self.other_auditor
+        self.other_data_entry.save()
+
+        self.doc_type = DocumentType.objects.create(
+            name="Detail Scope Doc",
+            slug="detail-scope-doc",
+            group_name="detail",
+            display_order=1,
+            is_active=True,
+        )
+        self.dossier = Dossier.objects.create(
+            file_number="DD-001",
+            full_name="Detail Scope User",
+            national_id="DD-N1",
+            personal_id="DD-P1",
+            room_number="1",
+            column_number="1",
+            shelf_number="1",
+            created_by=self.data_entry,
+        )
+        self.other_dossier = Dossier.objects.create(
+            file_number="DD-002",
+            full_name="Other Detail Scope User",
+            national_id="DD-N2",
+            personal_id="DD-P2",
+            room_number="2",
+            column_number="2",
+            shelf_number="2",
+            created_by=self.other_data_entry,
+        )
+
+        self.pending_doc = Document.objects.create(
+            dossier=self.dossier,
+            doc_type=self.doc_type,
+            doc_number="DD-PENDING",
+            doc_name="Pending Detail",
+            file_path="archive/dd-pending.pdf",
+            file_size_kb=100,
+            status=DocumentStatus.PENDING,
+            created_by=self.data_entry,
+        )
+        self.rejected_doc = Document.objects.create(
+            dossier=self.dossier,
+            doc_type=self.doc_type,
+            doc_number="DD-REJECTED",
+            doc_name="Rejected Detail",
+            file_path="archive/dd-rejected.pdf",
+            file_size_kb=100,
+            status=DocumentStatus.REJECTED,
+            rejection_reason="Needs correction",
+            created_by=self.data_entry,
+        )
+        self.approved_doc = Document.objects.create(
+            dossier=self.dossier,
+            doc_type=self.doc_type,
+            doc_number="DD-APPROVED",
+            doc_name="Approved Detail",
+            file_path="archive/dd-approved.pdf",
+            file_size_kb=100,
+            status=DocumentStatus.APPROVED,
+            created_by=self.data_entry,
+        )
+        self.outside_doc = Document.objects.create(
+            dossier=self.other_dossier,
+            doc_type=self.doc_type,
+            doc_number="DD-OUTSIDE",
+            doc_name="Outside Scope",
+            file_path="archive/dd-outside.pdf",
+            file_size_kb=100,
+            status=DocumentStatus.PENDING,
+            created_by=self.other_data_entry,
+        )
+
+    def test_auditor_can_open_scoped_pending_rejected_and_approved_documents(self):
+        self.client.force_authenticate(user=self.auditor)
+        for document in [self.pending_doc, self.rejected_doc, self.approved_doc]:
+            response = self.client.get(f"/api/documents/{document.id}/")
+            self.assertEqual(response.status_code, status.HTTP_200_OK)
+            self.assertEqual(response.data["id"], document.id)
+
+    def test_auditor_cannot_access_document_outside_assignment(self):
+        self.client.force_authenticate(user=self.auditor)
+        response = self.client.get(f"/api/documents/{self.outside_doc.id}/")
+        self.assertEqual(response.status_code, status.HTTP_404_NOT_FOUND)
