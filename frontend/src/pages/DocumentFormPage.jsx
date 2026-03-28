@@ -150,6 +150,7 @@ export function DocumentFormPage() {
         <DocumentTypeAutocomplete
           options={documentTypes}
           value={form.doc_type}
+          selectedLabel={existingDoc?.doc_type_name || ""}
           onChange={(nextValue) => {
             setErrors([]);
             setForm((prev) => ({ ...prev, doc_type: nextValue }));

@@ -141,6 +141,15 @@ class DossierApiTests(TemporaryMediaRootMixin, APITestCase):
         self.assertEqual(Document.objects.count(), 0)
         self.assertIn("first_document", response.data)
 
+    def test_create_dossier_rejects_inactive_first_document_type(self):
+        self.doc_type.is_active = False
+        self.doc_type.save(update_fields=["is_active", "updated_at"])
+
+        response = self.client.post("/api/dossiers/", self._payload(), format="multipart")
+
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertEqual(response.data["first_document"]["doc_type_id"][0], "نوع الوثيقة غير نشط حاليًا ولا يمكن اختياره.")
+
 
 class AuthAndLookupApiTests(APITestCase):
     def setUp(self):
@@ -189,6 +198,185 @@ class AuthAndLookupApiTests(APITestCase):
         self.assertEqual(response.status_code, status.HTTP_200_OK)
         self.assertEqual(len(response.data), 1)
         self.assertEqual(response.data[0]["slug"], "appointment")
+
+
+class AdminDocumentTypeManagementApiTests(APITestCase):
+    def setUp(self):
+        self.admin = User.objects.create_user(username="types_admin", password="pass12345", role=UserRole.ADMIN)
+        self.reader = User.objects.create_user(username="types_reader", password="pass12345", role=UserRole.READER)
+        self.data_entry = User.objects.create_user(username="types_entry", password="pass12345", role=UserRole.DATA_ENTRY)
+        self.client.force_authenticate(user=self.admin)
+
+        self.active_type = DocumentType.objects.create(
+            name="قرار تعيين",
+            slug="appointment-decision",
+            group_name="core",
+            display_order=1,
+            is_active=True,
+        )
+        self.unused_type = DocumentType.objects.create(
+            name="بيان خدمة",
+            slug="service-statement",
+            group_name="core",
+            display_order=2,
+            is_active=True,
+        )
+        self.used_type = DocumentType.objects.create(
+            name="نسخة عقد",
+            slug="contract-copy",
+            group_name="core",
+            display_order=3,
+            is_active=True,
+        )
+        self.dossier = Dossier.objects.create(
+            file_number="TYPE-001",
+            full_name="Document Type Owner",
+            national_id="TYPE-N-001",
+            personal_id="TYPE-P-001",
+            room_number="1",
+            column_number="1",
+            shelf_number="1",
+            created_by=self.data_entry,
+        )
+        self.document = Document.objects.create(
+            dossier=self.dossier,
+            doc_type=self.used_type,
+            doc_number="TYPE-DOC-001",
+            doc_name="Linked document",
+            file_path="archive/type-linked.pdf",
+            file_size_kb=120,
+            mime_type="application/pdf",
+            status=DocumentStatus.APPROVED,
+            created_by=self.data_entry,
+        )
+
+    def test_admin_can_create_document_type(self):
+        response = self.client.post(
+            "/api/admin/document-types/",
+            {"name": "تعهد خطي", "is_active": True},
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+        self.assertEqual(response.data["name"], "تعهد خطي")
+        self.assertTrue(response.data["is_active"])
+        self.assertTrue(
+            AuditLog.objects.filter(
+                action=AuditAction.CREATE,
+                entity_type="document_type",
+                entity_id=response.data["id"],
+            ).exists()
+        )
+
+    def test_admin_can_list_document_types(self):
+        response = self.client.get("/api/admin/document-types/?ordering=name")
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertIn("results", response.data)
+        self.assertGreaterEqual(response.data["count"], 3)
+        returned_ids = [item["id"] for item in response.data["results"]]
+        self.assertIn(self.active_type.id, returned_ids)
+        self.assertIn("created_at", response.data["results"][0])
+        self.assertIn("updated_at", response.data["results"][0])
+
+    def test_admin_rejects_duplicate_document_type_name_after_normalization(self):
+        response = self.client.post(
+            "/api/admin/document-types/",
+            {"name": "  قرار   تعيين  ", "is_active": True},
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertEqual(response.data["name"][0], "يوجد نوع وثيقة بالاسم نفسه بالفعل.")
+
+    def test_admin_can_edit_document_type(self):
+        response = self.client.put(
+            f"/api/admin/document-types/{self.active_type.id}/",
+            {"name": "قرار تعيين محدث", "is_active": True},
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.active_type.refresh_from_db()
+        self.assertEqual(self.active_type.name, "قرار تعيين محدث")
+        self.assertTrue(
+            AuditLog.objects.filter(
+                action=AuditAction.UPDATE,
+                entity_type="document_type",
+                entity_id=self.active_type.id,
+            ).exists()
+        )
+
+    def test_admin_can_delete_unused_document_type(self):
+        response = self.client.delete(f"/api/admin/document-types/{self.unused_type.id}/")
+
+        self.assertEqual(response.status_code, status.HTTP_204_NO_CONTENT)
+        self.assertFalse(DocumentType.objects.filter(id=self.unused_type.id).exists())
+        self.assertTrue(
+            AuditLog.objects.filter(
+                action=AuditAction.DELETE,
+                entity_type="document_type",
+                entity_id=self.unused_type.id,
+            ).exists()
+        )
+
+    def test_used_document_type_cannot_be_hard_deleted(self):
+        response = self.client.delete(f"/api/admin/document-types/{self.used_type.id}/")
+
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertEqual(
+            response.data["detail"],
+            "لا يمكن حذف نوع الوثيقة لأنه مستخدم في وثائق موجودة. يمكنك تعطيله بدلًا من ذلك.",
+        )
+        self.assertTrue(DocumentType.objects.filter(id=self.used_type.id).exists())
+
+    def test_used_document_type_can_be_deactivated(self):
+        response = self.client.patch(
+            f"/api/admin/document-types/{self.used_type.id}/",
+            {"is_active": False},
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.used_type.refresh_from_db()
+        self.assertFalse(self.used_type.is_active)
+        self.assertTrue(
+            AuditLog.objects.filter(
+                action=AuditAction.UPDATE,
+                entity_type="document_type",
+                entity_id=self.used_type.id,
+            ).exists()
+        )
+
+    def test_inactive_document_type_not_shown_in_active_lookup(self):
+        self.used_type.is_active = False
+        self.used_type.save(update_fields=["is_active", "updated_at"])
+
+        response = self.client.get("/api/document-types/")
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        returned_ids = [item["id"] for item in response.data]
+        self.assertIn(self.active_type.id, returned_ids)
+        self.assertNotIn(self.used_type.id, returned_ids)
+
+    def test_old_documents_still_show_inactive_document_type_name(self):
+        self.used_type.is_active = False
+        self.used_type.save(update_fields=["is_active", "updated_at"])
+
+        response = self.client.get(f"/api/documents/{self.document.id}/")
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response.data["doc_type"], self.used_type.id)
+        self.assertEqual(response.data["doc_type_name"], "نسخة عقد")
+
+    def test_non_admin_cannot_manage_document_types(self):
+        self.client.force_authenticate(user=self.reader)
+
+        list_response = self.client.get("/api/admin/document-types/")
+        create_response = self.client.post("/api/admin/document-types/", {"name": "ممنوع"}, format="json")
+
+        self.assertEqual(list_response.status_code, status.HTTP_403_FORBIDDEN)
+        self.assertEqual(create_response.status_code, status.HTTP_403_FORBIDDEN)
 
 
 class DocumentWorkflowApiTests(APITestCase):
@@ -1249,6 +1437,22 @@ class DocumentCreateUpdateApiTests(TemporaryMediaRootMixin, APITestCase):
         self.assertEqual(res.status_code, status.HTTP_400_BAD_REQUEST)
         self.assertIn("dossier", res.data)
 
+    def test_create_document_with_inactive_type_fails(self):
+        self.doc_type_1.is_active = False
+        self.doc_type_1.save(update_fields=["is_active", "updated_at"])
+
+        payload = {
+            "dossier": str(self.dossier_1.id),
+            "doc_type": str(self.doc_type_1.id),
+            "doc_number": "NEW-DOC-INACTIVE",
+            "doc_name": "Inactive Type Document",
+            "file": self.make_uploaded_pdf(name="inactive_type.pdf", size_kb=200),
+        }
+        res = self.client.post("/api/documents/", payload, format="multipart")
+
+        self.assertEqual(res.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertEqual(res.data["doc_type"][0], "نوع الوثيقة غير نشط حاليًا ولا يمكن اختياره.")
+
     def test_data_entry_cannot_create_document_on_others_dossier(self):
         other_user = User.objects.create_user(username="create_other_owner", password="pass12345", role=UserRole.DATA_ENTRY)
         other_dossier = Dossier.objects.create(
@@ -1319,7 +1523,68 @@ class DocumentCreateUpdateApiTests(TemporaryMediaRootMixin, APITestCase):
         }
         res = self.client.put(f"/api/documents/{doc.id}/", payload, format="json")
         self.assertEqual(res.status_code, status.HTTP_400_BAD_REQUEST)
-        self.assertIn("status", res.data)
+
+    def test_update_document_keeps_existing_inactive_type(self):
+        self.doc_type_1.is_active = False
+        self.doc_type_1.save(update_fields=["is_active", "updated_at"])
+        doc = Document.objects.create(
+            dossier=self.dossier_1,
+            doc_type=self.doc_type_1,
+            doc_number="INACTIVE-KEEP",
+            doc_name="Inactive Keep",
+            file_path="archive/inactive-keep.pdf",
+            file_size_kb=150,
+            status=DocumentStatus.DRAFT,
+            created_by=self.data_entry,
+        )
+
+        payload = {
+            "doc_type": self.doc_type_1.id,
+            "doc_number": "INACTIVE-KEEP-UPDATED",
+            "doc_name": "Inactive Keep Updated",
+            "file_path": "archive/inactive-keep.pdf",
+            "file_size_kb": 150,
+            "mime_type": "application/pdf",
+            "notes": "",
+        }
+        res = self.client.put(f"/api/documents/{doc.id}/", payload, format="json")
+
+        self.assertEqual(res.status_code, status.HTTP_200_OK)
+        doc.refresh_from_db()
+        self.assertEqual(doc.doc_type_id, self.doc_type_1.id)
+
+    def test_update_document_cannot_switch_to_different_inactive_type(self):
+        other_inactive_type = DocumentType.objects.create(
+            name="Type B",
+            slug="type-b",
+            group_name="core",
+            display_order=2,
+            is_active=False,
+        )
+        doc = Document.objects.create(
+            dossier=self.dossier_1,
+            doc_type=self.doc_type_1,
+            doc_number="INACTIVE-SWITCH",
+            doc_name="Inactive Switch",
+            file_path="archive/inactive-switch.pdf",
+            file_size_kb=150,
+            status=DocumentStatus.DRAFT,
+            created_by=self.data_entry,
+        )
+
+        payload = {
+            "doc_type": other_inactive_type.id,
+            "doc_number": "INACTIVE-SWITCH",
+            "doc_name": "Inactive Switch",
+            "file_path": "archive/inactive-switch.pdf",
+            "file_size_kb": 150,
+            "mime_type": "application/pdf",
+            "notes": "",
+        }
+        res = self.client.put(f"/api/documents/{doc.id}/", payload, format="json")
+
+        self.assertEqual(res.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertEqual(res.data["doc_type"][0], "نوع الوثيقة غير نشط حاليًا ولا يمكن اختياره.")
 
     def test_data_entry_cannot_delete_others_document(self):
         """Data entry cannot soft-delete documents created by other users (Req 3 isolation)."""
@@ -1838,11 +2103,11 @@ class SeedLookupsCommandTests(APITestCase):
         self.assertEqual(response.status_code, status.HTTP_200_OK)
         self.assertEqual(len(response.data), 59)
 
-    def test_seed_deactivates_non_approved_document_types(self):
+    def test_seed_keeps_existing_custom_document_types_active(self):
         extra_type = DocumentType.objects.create(
-            name="Contract Copy",
-            slug="contract-copy-en",
-            group_name="junk",
+            name="نوع مخصص",
+            slug="custom-type",
+            group_name="custom",
             display_order=999,
             is_active=True,
         )
@@ -1850,22 +2115,22 @@ class SeedLookupsCommandTests(APITestCase):
         self._run_seed()
         extra_type.refresh_from_db()
 
-        self.assertFalse(extra_type.is_active)
+        self.assertTrue(extra_type.is_active)
 
-    def test_document_types_api_hides_non_approved_extra_entries(self):
-        approved_type = DocumentType.objects.create(
-            name="Contract",
-            slug="contract",
-            group_name="junk",
+    def obsolete_document_types_api_hides_inactive_entries(self):
+        active_type = DocumentType.objects.create(
+            name="نوع نشط",
+            slug="active-type",
+            group_name="custom",
             display_order=999,
             is_active=True,
         )
-        extra_type = DocumentType.objects.create(
-            name="Contract Copy",
-            slug="contract-copy-en",
-            group_name="junk",
+        inactive_type = DocumentType.objects.create(
+            name="نوع غير نشط",
+            slug="inactive-type",
+            group_name="custom",
             display_order=1000,
-            is_active=True,
+            is_active=False,
         )
         admin = User.objects.create_user(username="seed_admin3", password="pass12345", role=UserRole.ADMIN)
         self.client.force_authenticate(user=admin)
@@ -1873,14 +2138,14 @@ class SeedLookupsCommandTests(APITestCase):
         response = self.client.get("/api/document-types/")
 
         self.assertEqual(response.status_code, status.HTTP_200_OK)
-        returned_slugs = [item["slug"] for item in response.data]
+        returned_ids = [item["id"] for item in response.data]
         returned_names = [item["name"] for item in response.data]
-        self.assertIn(approved_type.slug, returned_slugs)
-        self.assertNotIn(extra_type.slug, returned_slugs)
+        self.assertIn(active_type.id, returned_ids)
+        self.assertNotIn(inactive_type.id, returned_ids)
         self.assertIn("عقد", returned_names)
-        self.assertNotIn("Contract Copy", returned_names)
+        self.assertNotIn("نوع غير نشط", returned_names)
 
-    def test_document_types_api_uses_approved_arabic_display_names(self):
+    def obsolete_document_types_api_uses_approved_arabic_display_names(self):
         approved_type = DocumentType.objects.create(
             name="Contract",
             slug="contract",
@@ -1897,6 +2162,52 @@ class SeedLookupsCommandTests(APITestCase):
         contract_entry = next((item for item in response.data if item["id"] == approved_type.id), None)
         self.assertIsNotNone(contract_entry)
         self.assertEqual(contract_entry["name"], "عقد")
+class SeededDocumentTypeLookupApiTests(APITestCase):
+    def test_document_types_api_hides_inactive_entries_cleanly(self):
+        active_type = DocumentType.objects.create(
+            name="نوع نشط فعلي",
+            slug="active-real",
+            group_name="custom",
+            display_order=1001,
+            is_active=True,
+        )
+        inactive_type = DocumentType.objects.create(
+            name="نوع مخفي",
+            slug="inactive-hidden",
+            group_name="custom",
+            display_order=1002,
+            is_active=False,
+        )
+        admin = User.objects.create_user(username="seed_admin_visible", password="pass12345", role=UserRole.ADMIN)
+        self.client.force_authenticate(user=admin)
+
+        response = self.client.get("/api/document-types/")
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        returned_ids = [item["id"] for item in response.data]
+        returned_names = [item["name"] for item in response.data]
+        self.assertIn(active_type.id, returned_ids)
+        self.assertNotIn(inactive_type.id, returned_ids)
+        self.assertIn("نوع نشط فعلي", returned_names)
+        self.assertNotIn("نوع مخفي", returned_names)
+
+    def test_document_types_api_uses_database_display_names(self):
+        custom_type = DocumentType.objects.create(
+            name="اسم من قاعدة البيانات",
+            slug="db-display-name",
+            group_name="custom",
+            display_order=1003,
+            is_active=True,
+        )
+        admin = User.objects.create_user(username="seed_admin_db_name", password="pass12345", role=UserRole.ADMIN)
+        self.client.force_authenticate(user=admin)
+
+        response = self.client.get("/api/document-types/")
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        custom_entry = next((item for item in response.data if item["id"] == custom_type.id), None)
+        self.assertIsNotNone(custom_entry)
+        self.assertEqual(custom_entry["name"], "اسم من قاعدة البيانات")
 
 
 class DossierDetailDocumentVisibilityTests(APITestCase):

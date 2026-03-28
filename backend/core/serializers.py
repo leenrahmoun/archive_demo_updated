@@ -1,8 +1,13 @@
+import re
+import unicodedata
+
 from django.contrib.auth import get_user_model
 from django.core.exceptions import ValidationError as DjangoValidationError
 from django.db import IntegrityError
+from django.db.models import Max
 from rest_framework import serializers
 from rest_framework_simplejwt.tokens import RefreshToken, TokenError
+from django.utils.text import slugify
 
 from core.access import get_dossier_documents_for_user
 from core.models import AuditAction, AuditLog, Document, DocumentStatus, DocumentType, Dossier, Governorate, UserRole
@@ -165,6 +170,98 @@ class DocumentTypeLookupSerializer(serializers.ModelSerializer):
         fields = ("id", "name", "slug", "group_name", "display_order")
 
 
+class DocumentTypeManagementSerializer(serializers.ModelSerializer):
+    documents_count = serializers.SerializerMethodField()
+    is_used = serializers.SerializerMethodField()
+    name = serializers.CharField(
+        max_length=100,
+        error_messages={
+            "blank": "اسم نوع الوثيقة مطلوب.",
+            "required": "اسم نوع الوثيقة مطلوب.",
+        },
+    )
+
+    class Meta:
+        model = DocumentType
+        fields = (
+            "id",
+            "name",
+            "is_active",
+            "created_at",
+            "updated_at",
+            "documents_count",
+            "is_used",
+        )
+        read_only_fields = ("created_at", "updated_at", "documents_count", "is_used")
+
+    def get_documents_count(self, obj):
+        annotated_count = getattr(obj, "documents_count", None)
+        if annotated_count is not None:
+            return annotated_count
+        return obj.documents.count()
+
+    def get_is_used(self, obj):
+        return self.get_documents_count(obj) > 0
+
+    def validate_name(self, value):
+        cleaned_name = clean_document_type_name(value)
+        if not cleaned_name:
+            raise serializers.ValidationError("اسم نوع الوثيقة مطلوب.")
+
+        normalized_name = normalize_document_type_name(cleaned_name)
+        queryset = DocumentType.objects.all()
+        if self.instance is not None:
+            queryset = queryset.exclude(pk=self.instance.pk)
+
+        for existing_name in queryset.values_list("name", flat=True):
+            if normalize_document_type_name(existing_name) == normalized_name:
+                raise serializers.ValidationError("يوجد نوع وثيقة بالاسم نفسه بالفعل.")
+
+        return cleaned_name
+
+    def create(self, validated_data):
+        max_order = DocumentType.objects.aggregate(max_order=Max("display_order"))["max_order"] or 0
+        document_type = DocumentType.objects.create(
+            slug=build_document_type_slug(validated_data["name"]),
+            group_name="أنواع مضافة",
+            display_order=max_order + 1,
+            **validated_data,
+        )
+        create_audit_log(
+            user=self.context["request"].user,
+            action=AuditAction.CREATE,
+            entity_type="document_type",
+            entity_id=document_type.id,
+            old_values=None,
+            new_values={
+                "name": document_type.name,
+                "is_active": document_type.is_active,
+            },
+        )
+        return document_type
+
+    def update(self, instance, validated_data):
+        old_values = {
+            "name": instance.name,
+            "is_active": instance.is_active,
+        }
+        if "name" in validated_data:
+            validated_data["slug"] = build_document_type_slug(validated_data["name"], existing_slug=instance.slug)
+        document_type = super().update(instance, validated_data)
+        create_audit_log(
+            user=self.context["request"].user,
+            action=AuditAction.UPDATE,
+            entity_type="document_type",
+            entity_id=document_type.id,
+            old_values=old_values,
+            new_values={
+                "name": document_type.name,
+                "is_active": document_type.is_active,
+            },
+        )
+        return document_type
+
+
 class DocumentRejectSerializer(serializers.Serializer):
     rejection_reason = serializers.CharField(max_length=2000)
 
@@ -183,6 +280,7 @@ AUDIT_ENTITY_LABELS = {
     "document": "وثيقة",
     "dossier": "إضبارة",
     "user": "مستخدم",
+    "document_type": "نوع وثيقة",
 }
 AUDIT_CHANGE_FIELD_LABELS = {
     "status": "الحالة",
@@ -192,6 +290,8 @@ AUDIT_CHANGE_FIELD_LABELS = {
     "full_name": "الاسم",
     "role": "الدور",
     "rejection_reason": "سبب الرفض",
+    "name": "اسم نوع الوثيقة",
+    "is_active": "الحالة",
 }
 
 
@@ -201,6 +301,60 @@ DOCUMENT_STATUS_LABELS = {
     DocumentStatus.APPROVED: "معتمدة",
     DocumentStatus.REJECTED: "مرفوضة",
 }
+
+
+ARABIC_NORMALIZATION_MAP = str.maketrans(
+    {
+        "أ": "ا",
+        "إ": "ا",
+        "آ": "ا",
+        "ى": "ي",
+        "ؤ": "ي",
+        "ئ": "ي",
+        "ة": "ه",
+    }
+)
+
+
+def clean_document_type_name(value):
+    return re.sub(r"\s+", " ", (value or "")).strip()
+
+
+def normalize_document_type_name(value):
+    cleaned = clean_document_type_name(value)
+    normalized = unicodedata.normalize("NFKC", cleaned)
+    normalized = normalized.translate(ARABIC_NORMALIZATION_MAP)
+    normalized = "".join(
+        character
+        for character in normalized
+        if unicodedata.category(character) != "Mn"
+    )
+    return normalized.casefold()
+
+
+def build_document_type_slug(name, *, existing_slug=None):
+    if existing_slug:
+        return existing_slug
+
+    base_slug = slugify(clean_document_type_name(name), allow_unicode=True) or "document-type"
+    candidate = base_slug
+    suffix = 2
+
+    while DocumentType.objects.filter(slug=candidate).exists():
+        candidate = f"{base_slug}-{suffix}"
+        suffix += 1
+
+    return candidate
+
+
+def validate_active_document_type_selection(document_type, *, allow_inactive_instance_id=None):
+    if document_type.is_active:
+        return document_type
+
+    if allow_inactive_instance_id is not None and document_type.id == allow_inactive_instance_id:
+        return document_type
+
+    raise serializers.ValidationError("نوع الوثيقة غير نشط حاليًا ولا يمكن اختياره.")
 
 
 def get_user_full_name(user):
@@ -296,6 +450,10 @@ class AuditLogSerializer(serializers.ModelSerializer):
                 entity_user = User.objects.filter(id=obj.entity_id).first()
                 if entity_user:
                     return join_human_parts(get_user_full_name(entity_user), entity_user.username)
+            elif obj.entity_type == "document_type":
+                document_type = DocumentType.objects.filter(id=obj.entity_id).values("name").first()
+                if document_type:
+                    return document_type["name"]
         except Exception:
             return None
 
@@ -321,6 +479,10 @@ class AuditLogSerializer(serializers.ModelSerializer):
                 user = User.objects.filter(id=obj.entity_id).values("username").first()
                 if user:
                     return user["username"]
+            elif obj.entity_type == "document_type":
+                document_type = DocumentType.objects.filter(id=obj.entity_id).values("name").first()
+                if document_type:
+                    return document_type["name"]
         except Exception:
             pass
         return None
@@ -467,6 +629,9 @@ class DocumentCreateSerializer(serializers.ModelSerializer):
             raise serializers.ValidationError("You can only add documents to dossiers you created.")
         return value
 
+    def validate_doc_type(self, value):
+        return validate_active_document_type_selection(value)
+
     def create(self, validated_data):
         user = self.context["request"].user
         uploaded_file = validated_data.pop("file")
@@ -511,6 +676,9 @@ class DocumentUpdateSerializer(serializers.ModelSerializer):
         if self.instance.status not in [DocumentStatus.DRAFT, DocumentStatus.REJECTED]:
             raise serializers.ValidationError({"status": "Document can only be edited when it is in draft or rejected status."})
         return attrs
+
+    def validate_doc_type(self, value):
+        return validate_active_document_type_selection(value, allow_inactive_instance_id=self.instance.doc_type_id)
 
     def update(self, instance, validated_data):
         user = self.context["request"].user
@@ -616,6 +784,9 @@ class FirstDocumentInputSerializer(serializers.Serializer):
         except DocumentUploadError as exc:
             raise serializers.ValidationError(str(exc)) from exc
         return value
+
+    def validate_doc_type_id(self, value):
+        return validate_active_document_type_selection(value)
 
 
 class DossierCreateSerializer(serializers.Serializer):

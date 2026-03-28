@@ -5,7 +5,6 @@ from pathlib import Path
 
 from django.core.management.base import BaseCommand
 
-from core.document_type_catalog import get_approved_document_type_entries
 from core.models import DocumentType, Governorate
 
 DATA_DIR = Path(__file__).parent / "data"
@@ -36,8 +35,7 @@ class Command(BaseCommand):
         )
 
     def _seed_document_types(self):
-        data = get_approved_document_type_entries()
-        approved_slugs = {entry["slug"] for entry in data}
+        data = json.loads((DATA_DIR / "document_types.json").read_text(encoding="utf-8"))
         created = updated = 0
         for entry in data:
             obj, is_new = DocumentType.objects.update_or_create(
@@ -53,7 +51,6 @@ class Command(BaseCommand):
                 created += 1
             else:
                 updated += 1
-        deactivated = DocumentType.objects.exclude(slug__in=approved_slugs).filter(is_active=True).update(is_active=False)
         self.stdout.write(
-            f"  Document types: {created} created, {updated} already existed, {deactivated} deactivated."
+            f"  Document types: {created} created, {updated} already existed (ensured current values)."
         )

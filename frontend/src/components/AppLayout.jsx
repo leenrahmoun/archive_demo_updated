@@ -11,6 +11,7 @@ export function AppLayout() {
   const canCreate = CREATE_ROLES.has(user?.role);
   const canViewAudit = AUDIT_ROLES.has(user?.role);
   const canManageUsers = ADMIN_ROLES.has(user?.role);
+  const canManageDocumentTypes = ADMIN_ROLES.has(user?.role);
   const canViewReviewQueue = REVIEW_QUEUE_ROLES.has(user?.role);
 
   return (
@@ -23,6 +24,7 @@ export function AppLayout() {
           {canViewReviewQueue ? <NavLink to="/review-queue">قائمة المراجعة</NavLink> : null}
           {canViewAudit ? <NavLink to="/audit-logs">سجل التدقيق</NavLink> : null}
           {canManageUsers ? <NavLink to="/admin/users">إدارة المستخدمين</NavLink> : null}
+          {canManageDocumentTypes ? <NavLink to="/admin/document-types">إدارة أنواع الوثائق</NavLink> : null}
           {canCreate ? <NavLink to="/dossiers/new">إنشاء إضبارة</NavLink> : null}
         </nav>
       </aside>
@@ -39,6 +41,7 @@ export function AppLayout() {
             {canViewReviewQueue ? <Link to="/review-queue">قائمة المراجعة</Link> : null}
             {canViewAudit ? <Link to="/audit-logs">سجل التدقيق</Link> : null}
             {canManageUsers ? <Link to="/admin/users">إدارة المستخدمين</Link> : null}
+            {canManageDocumentTypes ? <Link to="/admin/document-types">إدارة أنواع الوثائق</Link> : null}
             {canCreate ? <Link to="/dossiers/new">إنشاء إضبارة</Link> : null}
             <button type="button" className="btn-danger" onClick={logout}>
               تسجيل الخروج

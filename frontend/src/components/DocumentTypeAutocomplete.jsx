@@ -16,6 +16,7 @@ function normalizeArabicSearch(value) {
 export function DocumentTypeAutocomplete({
   options,
   value,
+  selectedLabel = "",
   onChange,
   label = "نوع الوثيقة",
   placeholder = "ابدأ بكتابة نوع الوثيقة",
@@ -29,7 +30,9 @@ export function DocumentTypeAutocomplete({
     () => options.find((option) => String(option.id) === String(value)) || null,
     [options, value]
   );
-  const inputValue = isOpen ? query : selectedOption?.name || query;
+  const selectedName = selectedOption?.name || (value ? selectedLabel : "") || "";
+  const hasResolvedSelection = Boolean(selectedOption || (value && selectedLabel));
+  const inputValue = isOpen ? query : selectedName || query;
 
   const normalizedQuery = useMemo(() => normalizeArabicSearch(query), [query]);
 
@@ -57,7 +60,7 @@ export function DocumentTypeAutocomplete({
     setQuery(nextQuery);
     setIsOpen(true);
 
-    if (selectedOption && nextQuery !== selectedOption.name) {
+    if (hasResolvedSelection && nextQuery !== selectedName) {
       onChange("");
     }
   }
@@ -79,14 +82,12 @@ export function DocumentTypeAutocomplete({
         autoComplete="off"
         onFocus={() => {
           setIsOpen(true);
-          setQuery(selectedOption?.name || query);
+          setQuery(selectedName || query);
         }}
         onBlur={() => {
           window.setTimeout(() => {
             setIsOpen(false);
-            if (!selectedOption) {
-              setQuery("");
-            }
+            setQuery(hasResolvedSelection ? selectedName : "");
           }, 120);
         }}
         onChange={handleInputChange}

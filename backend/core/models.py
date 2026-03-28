@@ -49,9 +49,11 @@ class DocumentType(models.Model):
     group_name = models.CharField(max_length=100)
     display_order = models.PositiveIntegerField(default=0)
     is_active = models.BooleanField(default=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
 
     class Meta:
-        ordering = ("group_name", "display_order", "id")
+        ordering = ("group_name", "display_order", "name", "id")
 
     def __str__(self) -> str:
         return self.name

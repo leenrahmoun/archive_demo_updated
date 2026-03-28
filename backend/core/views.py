@@ -1,6 +1,7 @@
 from pathlib import Path
 
 from django.core.files.storage import default_storage
+from django.db.models import Count
 from django.http import FileResponse, Http404
 from rest_framework import filters, generics, status
 from rest_framework.parsers import FormParser, JSONParser, MultiPartParser
@@ -23,8 +24,7 @@ from core.access import (
     get_dossier_visibility_queryset,
     get_review_queue_queryset_for_user,
 )
-from core.document_type_catalog import get_approved_document_type_entries, get_approved_document_type_slugs
-from core.models import AuditLog, Document, DocumentStatus, DocumentType, Dossier, Governorate, User, UserRole
+from core.models import AuditAction, AuditLog, Document, DocumentStatus, DocumentType, Dossier, Governorate, User, UserRole
 from core.permissions import AdminOnlyPermission, AuditLogPermission, DocumentPermission, DossierPermission, DocumentWorkflowPermission
 from core.serializers import (
     AuditLogSerializer,
@@ -32,6 +32,7 @@ from core.serializers import (
     DocumentReplaceFileSerializer,
     DocumentRejectSerializer,
     DocumentSummarySerializer,
+    DocumentTypeManagementSerializer,
     DocumentTypeLookupSerializer,
     DocumentUpdateSerializer,
     DossierCreateSerializer,
@@ -42,6 +43,7 @@ from core.serializers import (
     MeSerializer,
     UserManagementSerializer,
 )
+from core.services.audit_log_service import create_audit_log
 from core.services.document_workflow_service import (
     WorkflowError,
     approve_document,
@@ -224,34 +226,58 @@ class DocumentTypeListAPIView(generics.ListAPIView):
     serializer_class = DocumentTypeLookupSerializer
 
     def get_queryset(self):
-        return DocumentType.objects.filter(
-            is_active=True,
-            slug__in=get_approved_document_type_slugs(),
-        )
+        return DocumentType.objects.filter(is_active=True).order_by("group_name", "display_order", "name", "id")
 
-    def list(self, request, *args, **kwargs):
-        approved_entries = get_approved_document_type_entries()
-        document_types_by_slug = {
-            document_type.slug: document_type
-            for document_type in self.get_queryset()
-        }
-        payload = []
 
-        for entry in approved_entries:
-            document_type = document_types_by_slug.get(entry["slug"])
-            if document_type is None:
-                continue
-            payload.append(
-                {
-                    "id": document_type.id,
-                    "name": entry["name"],
-                    "slug": entry["slug"],
-                    "group_name": entry["group"],
-                    "display_order": entry["order"],
-                }
+class AdminDocumentTypeListCreateAPIView(generics.ListCreateAPIView):
+    permission_classes = [IsAuthenticated, AdminOnlyPermission]
+    serializer_class = DocumentTypeManagementSerializer
+    pagination_class = StandardListPagination
+    filter_backends = [filters.OrderingFilter]
+    ordering_fields = ["name", "created_at", "updated_at"]
+    ordering = ["name", "id"]
+
+    def get_queryset(self):
+        queryset = DocumentType.objects.annotate(documents_count=Count("documents")).order_by("name", "id")
+
+        search_value = (self.request.query_params.get("search") or "").strip()
+        if search_value:
+            queryset = queryset.filter(name__icontains=search_value)
+
+        is_active = self.request.query_params.get("is_active")
+        if is_active is not None:
+            lowered = is_active.lower()
+            if lowered in {"true", "1"}:
+                queryset = queryset.filter(is_active=True)
+            elif lowered in {"false", "0"}:
+                queryset = queryset.filter(is_active=False)
+
+        return queryset
+
+
+class AdminDocumentTypeRetrieveUpdateDestroyAPIView(generics.RetrieveUpdateDestroyAPIView):
+    permission_classes = [IsAuthenticated, AdminOnlyPermission]
+    serializer_class = DocumentTypeManagementSerializer
+    queryset = DocumentType.objects.annotate(documents_count=Count("documents")).all()
+
+    def destroy(self, request, *args, **kwargs):
+        instance = self.get_object()
+        if instance.documents.exists():
+            return Response(
+                {"detail": "لا يمكن حذف نوع الوثيقة لأنه مستخدم في وثائق موجودة. يمكنك تعطيله بدلًا من ذلك."},
+                status=status.HTTP_400_BAD_REQUEST,
             )
 
-        return Response(payload, status=status.HTTP_200_OK)
+        create_audit_log(
+            user=request.user,
+            action=AuditAction.DELETE,
+            entity_type="document_type",
+            entity_id=instance.id,
+            old_values={"name": instance.name, "is_active": instance.is_active},
+            new_values={"name": instance.name, "message": "تم حذف نوع الوثيقة."},
+        )
+        instance.delete()
+        return Response(status=status.HTTP_204_NO_CONTENT)
 
 
 class AuditLogPagination(PageNumberPagination):

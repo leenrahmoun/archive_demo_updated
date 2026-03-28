@@ -15,6 +15,7 @@ import { RoleGuard } from "./components/RoleGuard";
 import { NotFoundPage } from "./pages/NotFoundPage";
 import { UserManagementPage } from "./pages/UserManagementPage";
 import { ReviewQueuePage } from "./pages/ReviewQueuePage";
+import { DocumentTypesManagementPage } from "./pages/DocumentTypesManagementPage";
 
 function HomeRedirect() {
   const { isAuthenticated } = useAuth();
@@ -91,6 +92,14 @@ export default function App() {
           element={
             <RoleGuard allowedRoles={["admin"]}>
               <UserManagementPage />
+            </RoleGuard>
+          }
+        />
+        <Route
+          path="/admin/document-types"
+          element={
+            <RoleGuard allowedRoles={["admin"]}>
+              <DocumentTypesManagementPage />
             </RoleGuard>
           }
         />
