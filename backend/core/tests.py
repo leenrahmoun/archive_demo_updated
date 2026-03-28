@@ -1647,6 +1647,20 @@ class DocumentFileAccessApiTests(TemporaryMediaRootMixin, APITestCase):
             self.assertEqual(response.status_code, status.HTTP_200_OK)
             self.assertEqual(response["Content-Type"], "application/pdf")
 
+    def test_auditor_cannot_access_scoped_draft_document_file(self):
+        self.data_entry.assigned_auditor = self.auditor
+        self.data_entry.save()
+        draft_document = self.create_document_with_file(
+            created_by=self.data_entry,
+            dossier=self.dossier,
+            status_value=DocumentStatus.DRAFT,
+            name="auditor-draft",
+        )
+
+        self.client.force_authenticate(user=self.auditor)
+        response = self.client.get(f"/api/documents/{draft_document.id}/file/")
+        self.assertEqual(response.status_code, status.HTTP_404_NOT_FOUND)
+
     def test_auditor_cannot_access_document_file_outside_assignment(self):
         self.other_data_entry.assigned_auditor = self.other_auditor
         self.other_data_entry.save()
@@ -2512,8 +2526,8 @@ class AdminApprovalIndicatorTests(APITestCase):
         serializer = DocumentSummarySerializer(doc)
         self.assertFalse(serializer.data["is_approved_by_admin"])
 
-    def test_no_assigned_auditor_is_not_flagged(self):
-        """Document without assigned auditor should have is_approved_by_admin=False."""
+    def test_no_assigned_auditor_still_shows_admin_approval(self):
+        """Admin approval should be indicated even when no auditor assignment exists."""
         # data_entry has NO assigned auditor
 
         # Create document and approve by admin
@@ -2529,10 +2543,10 @@ class AdminApprovalIndicatorTests(APITestCase):
             reviewed_by=self.admin,
         )
 
-        # Check serializer field - no assigned auditor means not in scope
+        # Check serializer field - approval origin depends on reviewer role only
         from core.serializers import DocumentSummarySerializer
         serializer = DocumentSummarySerializer(doc)
-        self.assertFalse(serializer.data["is_approved_by_admin"])
+        self.assertTrue(serializer.data["is_approved_by_admin"])
 
     def test_api_includes_indicator_for_auditor(self):
         """API response includes is_approved_by_admin field when auditor views documents."""

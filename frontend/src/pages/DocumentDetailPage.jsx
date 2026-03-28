@@ -12,7 +12,6 @@ import { DocumentWorkflowActions } from "../components/DocumentWorkflowActions";
 import { PageHeader } from "../components/PageHeader";
 import { EmptyBlock, LoadingBlock } from "../components/StateBlock";
 import { StatusBadge } from "../components/StatusBadge";
-import { getApprovalOriginLabel, getApprovalOriginTone } from "../utils/documentReview";
 import { flattenErrors } from "../utils/errors";
 import { formatDate } from "../utils/format";
 
@@ -20,6 +19,7 @@ export function DocumentDetailPage() {
   const { id } = useParams();
   const { user } = useAuth();
   const fileInputRef = useRef(null);
+  const pdfPrintFrameRef = useRef(null);
   const [document, setDocument] = useState(null);
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState("");
@@ -29,6 +29,7 @@ export function DocumentDetailPage() {
   const [pdfError, setPdfError] = useState("");
   const [isReplacingFile, setIsReplacingFile] = useState(false);
   const [isSubmittingReview, setIsSubmittingReview] = useState(false);
+  const [isPrintingPdf, setIsPrintingPdf] = useState(false);
   const [feedback, setFeedback] = useState({ success: "", error: "" });
 
   function clearPdfUrl() {
@@ -52,14 +53,21 @@ export function DocumentDetailPage() {
         }
         return nextPdfUrl;
       });
-      return true;
+      return nextPdfUrl;
     } catch {
       clearPdfUrl();
       setPdfError("تعذر تحميل ملف PDF.");
-      return false;
+      return "";
     } finally {
       setIsPdfLoading(false);
     }
+  }
+
+  async function ensurePdfUrlLoaded() {
+    if (pdfUrl) {
+      return pdfUrl;
+    }
+    return loadPdfPreview();
   }
 
   async function refreshDocumentDetails() {
@@ -101,6 +109,10 @@ export function DocumentDetailPage() {
       if (pdfUrl) {
         URL.revokeObjectURL(pdfUrl);
       }
+      if (pdfPrintFrameRef.current) {
+        pdfPrintFrameRef.current.remove();
+        pdfPrintFrameRef.current = null;
+      }
     };
   }, [pdfUrl]);
 
@@ -112,10 +124,59 @@ export function DocumentDetailPage() {
 
     setIsPdfVisible(true);
     if (!pdfUrl && !isPdfLoading) {
-      const didLoad = await loadPdfPreview();
-      if (!didLoad) {
+      const nextPdfUrl = await loadPdfPreview();
+      if (!nextPdfUrl) {
         setIsPdfVisible(false);
       }
+    }
+  }
+
+  async function handlePrintPdf() {
+    setIsPrintingPdf(true);
+    setPdfError("");
+
+    try {
+      const nextPdfUrl = await ensurePdfUrlLoaded();
+      if (!nextPdfUrl) {
+        return;
+      }
+
+      if (pdfPrintFrameRef.current) {
+        pdfPrintFrameRef.current.remove();
+        pdfPrintFrameRef.current = null;
+      }
+
+      const printFrame = window.document.createElement("iframe");
+      printFrame.style.position = "fixed";
+      printFrame.style.width = "0";
+      printFrame.style.height = "0";
+      printFrame.style.border = "0";
+      printFrame.style.opacity = "0";
+      printFrame.setAttribute("aria-hidden", "true");
+      printFrame.src = nextPdfUrl;
+
+      printFrame.onload = () => {
+        window.setTimeout(() => {
+          try {
+            printFrame.contentWindow?.focus();
+            printFrame.contentWindow?.print();
+          } finally {
+            window.setTimeout(() => {
+              if (pdfPrintFrameRef.current === printFrame) {
+                printFrame.remove();
+                pdfPrintFrameRef.current = null;
+              }
+            }, 1500);
+          }
+        }, 250);
+      };
+
+      window.document.body.appendChild(printFrame);
+      pdfPrintFrameRef.current = printFrame;
+    } catch {
+      setPdfError("تعذر تجهيز ملف PDF للطباعة.");
+    } finally {
+      setIsPrintingPdf(false);
     }
   }
 
@@ -142,8 +203,8 @@ export function DocumentDetailPage() {
 
       if (shouldRefreshPreview) {
         setIsPdfVisible(true);
-        const didLoad = await loadPdfPreview();
-        if (!didLoad) {
+        const nextPdfUrl = await loadPdfPreview();
+        if (!nextPdfUrl) {
           setIsPdfVisible(false);
         }
       } else {
@@ -192,8 +253,12 @@ export function DocumentDetailPage() {
   }
 
   const isRejected = document.status === "rejected";
+  const isApprovedByAdmin = document.status === "approved" && document.is_approved_by_admin;
   const isDocumentCreator = user?.id === document.created_by;
   const isCreatorDataEntry = user?.role === "data_entry" && isDocumentCreator;
+  const isReader = user?.role === "reader";
+  const isAuditor = user?.role === "auditor";
+  const isReadOnlyViewer = isReader || isAuditor;
   const rejectionReason = document.rejection_reason?.trim() || "لا يوجد سبب رفض مسجل";
   const compactRejectionReason = isRejected
     ? document.rejection_reason?.trim()
@@ -206,13 +271,20 @@ export function DocumentDetailPage() {
     !document.is_deleted &&
     (document.status === "draft" || isRejected);
   const canShowRejectedActions = isRejected && isCreatorDataEntry && !document.is_deleted;
-  const shouldShowWorkflowActions = !(isRejected && user?.role === "data_entry");
+  const shouldShowWorkflowActions = !(isRejected && user?.role === "data_entry") && !isReader;
   const canEditDocument =
     !document.is_deleted &&
     (user?.role === "admin" || (user?.role === "data_entry" && isDocumentCreator)) &&
     (document.status === "draft" || isRejected);
-  const approvalOriginLabel = getApprovalOriginLabel(document);
-  const approvalOriginTone = getApprovalOriginTone(document);
+  const adminApprovalMessage = document.reviewed_by_name
+    ? `تم اعتماد هذه الوثيقة من المدير بواسطة ${document.reviewed_by_name}.`
+    : "تم اعتماد هذه الوثيقة من المدير.";
+  const pdfSectionTitle = isReadOnlyViewer ? "قراءة ملف PDF" : "ملف PDF";
+  const pdfSectionHelper = isReader
+    ? "يمكنك قراءة ملف الوثيقة وطباعته فقط. لا توجد أي صلاحيات تعديل على المحتوى."
+    : isAuditor
+      ? "يمكنك قراءة الملف وطباعته ضمن نطاقك المسموح فقط. لا تتاح لك أي إجراءات تعديل على الوثيقة."
+      : "يمكنك قراءة ملف الوثيقة داخل الصفحة أو طباعته. تظهر إجراءات التعديل فقط عندما تكون متاحة حسب الدور والحالة.";
 
   return (
     <section>
@@ -265,6 +337,19 @@ export function DocumentDetailPage() {
         </div>
       ) : null}
 
+      {isApprovedByAdmin ? (
+        <div className="card admin-approval-card">
+          <div className="admin-approval-card__header">
+            <h3 className="admin-approval-card__title">اعتماد المدير</h3>
+            <StatusBadge status={document.status} />
+          </div>
+          <p className="admin-approval-card__message">{adminApprovalMessage}</p>
+          {document.reviewed_at ? (
+            <p className="admin-approval-card__meta">تاريخ الاعتماد: {formatDate(document.reviewed_at)}</p>
+          ) : null}
+        </div>
+      ) : null}
+
       <div className="card details-grid">
         <p>
           <strong>رقم الوثيقة:</strong> {document.doc_number}
@@ -273,7 +358,7 @@ export function DocumentDetailPage() {
           <strong>اسم الوثيقة:</strong> {document.doc_name}
         </p>
         <p>
-          <strong>الحالة:</strong> {document.status} <StatusBadge status={document.status} />
+          <strong>الحالة:</strong> <StatusBadge status={document.status} />
         </p>
         <p>
           <strong>رقم الإضبارة:</strong>{" "}
@@ -296,20 +381,11 @@ export function DocumentDetailPage() {
         <p>
           <strong>المراجع:</strong> {document.reviewed_by_name || document.reviewed_by || "-"}
         </p>
-        {approvalOriginLabel ? (
-          <p>
-            <strong>جهة الاعتماد:</strong>{" "}
-            <span className={`approval-origin-note approval-origin-note--${approvalOriginTone || "neutral"}`}>
-              {approvalOriginLabel}
-            </span>
-          </p>
-        ) : null}
         <p>
           <strong>تاريخ المراجعة:</strong> {formatDate(document.reviewed_at)}
         </p>
         <p>
-          <strong>سبب الرفض:</strong>{" "}
-          <span className={isRejected ? "muted" : undefined}>{compactRejectionReason}</span>
+          <strong>سبب الرفض:</strong> <span className={isRejected ? "muted" : undefined}>{compactRejectionReason}</span>
         </p>
         <p>
           <strong>الحذف المنطقي:</strong> {document.is_deleted ? "نعم" : "لا"}
@@ -321,68 +397,73 @@ export function DocumentDetailPage() {
           <strong>ملاحظات:</strong> {document.notes || "-"}
         </p>
 
-        <div className="full-row" style={{ marginTop: "1rem" }}>
-          <div style={{ display: "flex", gap: "0.75rem", flexWrap: "wrap", alignItems: "center" }}>
-            <button type="button" className="btn-secondary" onClick={handlePdfToggle} disabled={isPdfLoading}>
-              {isPdfVisible ? "إخفاء ملف PDF" : "عرض ملف PDF"}
-            </button>
-            {canReplacePdf && !isRejected ? (
-              <button
-                type="button"
-                className="btn-secondary"
-                onClick={handleReplaceClick}
-                disabled={isReplacingFile}
-              >
-                {isReplacingFile ? "جارٍ استبدال الملف..." : "استبدال ملف PDF"}
-              </button>
-            ) : null}
-            {pdfUrl ? (
-              <a href={pdfUrl} target="_blank" rel="noreferrer">
-                فتح في نافذة جديدة
-              </a>
-            ) : null}
-          </div>
-
-          {pdfError ? <AlertMessage type="error" message={pdfError} /> : null}
-
-          {isPdfVisible ? (
-            <div
-              style={{
-                marginTop: "0.75rem",
-                minHeight: "720px",
-                border: "1px solid #d8e1ef",
-                borderRadius: "12px",
-                overflow: "hidden",
-                background: "#f8fbff",
-              }}
-            >
-              {pdfUrl ? (
-                <object
-                  data={pdfUrl}
-                  type="application/pdf"
-                  width="100%"
-                  height="720"
-                  aria-label={`PDF ${document.doc_name}`}
-                >
-                  <div className="state-block info" style={{ margin: "1rem" }}>
-                    المتصفح لا يعرض ملف PDF داخل الصفحة. استخدم رابط الفتح في نافذة جديدة.
-                  </div>
-                </object>
-              ) : (
-                <div className="state-block info" style={{ margin: "1rem" }}>
-                  جارٍ تحميل ملف PDF...
-                </div>
-              )}
-            </div>
-          ) : null}
-        </div>
-
         {canEditDocument ? (
           <p className="full-row" style={{ marginTop: "1rem" }}>
             <Link to={`/documents/${document.id}/edit`} className="button">
               تعديل الوثيقة
             </Link>
           </p>
+        ) : null}
+      </div>
+
+      <div className="card document-file-card">
+        <div className="document-file-card__header">
+          <div>
+            <h3>{pdfSectionTitle}</h3>
+            <p className="muted">{pdfSectionHelper}</p>
+          </div>
+          <div className="document-file-card__actions">
+            <button
+              type="button"
+              className="btn-secondary"
+              onClick={handlePdfToggle}
+              disabled={isPdfLoading || isPrintingPdf}
+            >
+              {isPdfVisible ? "إخفاء القراءة" : "قراءة الملف"}
+            </button>
+            <button
+              type="button"
+              className="btn-secondary"
+              onClick={handlePrintPdf}
+              disabled={isPdfLoading || isPrintingPdf}
+            >
+              {isPrintingPdf ? "جارٍ تجهيز الطباعة..." : "طباعة الملف"}
+            </button>
+            {canReplacePdf && !isRejected ? (
+              <button
+                type="button"
+                className="btn-secondary"
+                onClick={handleReplaceClick}
+                disabled={isReplacingFile || isPdfLoading || isPrintingPdf}
+              >
+                {isReplacingFile ? "جارٍ استبدال الملف..." : "استبدال ملف PDF"}
+              </button>
+            ) : null}
+          </div>
+        </div>
+
+        {pdfUrl ? (
+          <a href={pdfUrl} target="_blank" rel="noreferrer">
+            فتح الملف في نافذة مستقلة
+          </a>
+        ) : null}
+
+        {pdfError ? <AlertMessage type="error" message={pdfError} /> : null}
+
+        {isPdfVisible ? (
+          <div className="document-file-card__preview">
+            {pdfUrl ? (
+              <iframe
+                src={pdfUrl}
+                title={`PDF ${document.doc_name}`}
+                className="document-file-card__frame"
+              />
+            ) : (
+              <div className="state-block info" style={{ margin: "1rem" }}>
+                جارٍ تحميل ملف PDF...
+              </div>
+            )}
+          </div>
         ) : null}
       </div>
 

@@ -397,18 +397,10 @@ class DocumentSummarySerializer(serializers.ModelSerializer):
 
     def get_is_approved_by_admin(self, obj):
         """
-        Returns True if document is approved and reviewed by an admin user,
-        indicating that an admin approved a document in the auditor's scope.
+        Returns True when the current approved state was set by an admin user.
         """
         if obj.status != DocumentStatus.APPROVED:
             return False
-        if not obj.created_by:
-            return False
-        # Get the assigned auditor for the creator (if creator is data_entry)
-        assigned_auditor_id = getattr(obj.created_by, "assigned_auditor_id", None)
-        if not assigned_auditor_id:
-            return False
-        # Check if reviewer exists and is an admin
         if not obj.reviewed_by:
             return False
         return obj.reviewed_by.role == UserRole.ADMIN

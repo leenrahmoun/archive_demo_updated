@@ -194,6 +194,73 @@ button:disabled {
   flex-wrap: wrap;
 }
 
+.admin-approval-card {
+  border: 1px solid #f2d49a;
+  border-right: 6px solid #b7791f;
+  background: linear-gradient(180deg, #fffaf0 0%, #ffffff 100%);
+  box-shadow: 0 10px 24px rgba(183, 121, 31, 0.12);
+}
+
+.admin-approval-card__header,
+.document-file-card__header {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 1rem;
+  flex-wrap: wrap;
+  margin-bottom: 0.85rem;
+}
+
+.admin-approval-card__title,
+.document-file-card__header h3 {
+  margin: 0 0 0.25rem;
+  color: #8a5a13;
+}
+
+.document-file-card__header h3 {
+  color: #12345a;
+}
+
+.admin-approval-card__message {
+  margin: 0 0 0.45rem;
+  color: #5b3b08;
+  font-weight: 600;
+  line-height: 1.8;
+}
+
+.admin-approval-card__meta {
+  margin: 0;
+  color: #7b5a26;
+}
+
+.document-file-card {
+  border: 1px solid #d7e4f3;
+  background: linear-gradient(180deg, #f9fbff 0%, #ffffff 100%);
+}
+
+.document-file-card__actions {
+  display: flex;
+  gap: 0.75rem;
+  flex-wrap: wrap;
+  align-items: center;
+}
+
+.document-file-card__preview {
+  margin-top: 0.9rem;
+  min-height: 720px;
+  border: 1px solid #d8e1ef;
+  border-radius: 12px;
+  overflow: hidden;
+  background: #f8fbff;
+}
+
+.document-file-card__frame {
+  width: 100%;
+  min-height: 720px;
+  border: 0;
+  background: #fff;
+}
+
 .page-header {
   margin-bottom: 0.9rem;
 }
