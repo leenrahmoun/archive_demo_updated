@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { useNavigate } from "react-router-dom";
+import { DocumentTypeAutocomplete } from "../components/DocumentTypeAutocomplete";
 import { createDossier } from "../api/dossiersApi";
 import { getDocumentTypes, getGovernorates } from "../api/lookupsApi";
 import { flattenErrors } from "../utils/errors";
@@ -54,6 +55,11 @@ export function CreateDossierPage() {
     event.preventDefault();
     setErrors([]);
 
+    if (!form.doc_type_id) {
+      setErrors(["يرجى اختيار نوع الوثيقة من القائمة المقترحة."]);
+      return;
+    }
+
     if (!selectedFile) {
       setErrors(["يجب اختيار ملف PDF للوثيقة الأولى."]);
       return;
@@ -87,6 +93,18 @@ export function CreateDossierPage() {
     setIsSubmitting(true);
     try {
       const created = await createDossier(payload);
+      const firstCreatedDocument = created.documents?.[0];
+
+      if (firstCreatedDocument?.id) {
+        navigate(`/documents/${firstCreatedDocument.id}`, {
+          state: {
+            successMessage: "تم إنشاء الإضبارة والوثيقة الأولى بنجاح. يمكنك الآن إرسال الوثيقة للمراجعة.",
+            fromDossierCreation: true,
+          },
+        });
+        return;
+      }
+
       navigate(`/dossiers/${created.id}`);
     } catch (err) {
       const backendErrors = flattenErrors(err?.response?.data);
@@ -117,14 +135,15 @@ export function CreateDossierPage() {
         <input placeholder="رقم الرف" value={form.shelf_number} onChange={(e) => setForm((p) => ({ ...p, shelf_number: e.target.value }))} required />
 
         <h3 className="full-row">بيانات الوثيقة الأولى</h3>
-        <select value={form.doc_type_id} onChange={(e) => setForm((p) => ({ ...p, doc_type_id: e.target.value }))} required>
-          <option value="">نوع الوثيقة</option>
-          {documentTypes.map((docType) => (
-            <option value={docType.id} key={docType.id}>
-              {docType.name}
-            </option>
-          ))}
-        </select>
+        <DocumentTypeAutocomplete
+          options={documentTypes}
+          value={form.doc_type_id}
+          onChange={(nextValue) => {
+            setErrors([]);
+            setForm((prev) => ({ ...prev, doc_type_id: nextValue }));
+          }}
+          required
+        />
         <input placeholder="رقم الوثيقة" value={form.doc_number} onChange={(e) => setForm((p) => ({ ...p, doc_number: e.target.value }))} required />
         <input placeholder="اسم الوثيقة" value={form.doc_name} onChange={(e) => setForm((p) => ({ ...p, doc_name: e.target.value }))} required />
         <input placeholder="ملاحظات (اختياري)" value={form.notes} onChange={(e) => setForm((p) => ({ ...p, notes: e.target.value }))} />

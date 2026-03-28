@@ -94,6 +94,8 @@ class DossierApiTests(TemporaryMediaRootMixin, APITestCase):
         self.assertEqual(len(response.data["documents"]), 1)
         dossier = Dossier.objects.get()
         document = Document.objects.get()
+        self.assertEqual(response.data["documents"][0]["id"], document.id)
+        self.assertEqual(response.data["documents"][0]["status"], DocumentStatus.DRAFT)
         self.assertTrue(document.file_path.startswith(f"uploads/dossier_{dossier.id}/"))
         self.assertEqual(document.file_size_kb, 120)
         self.assertEqual(document.mime_type, "application/pdf")
@@ -1803,7 +1805,7 @@ class SeedLookupsCommandTests(APITestCase):
     def test_seed_creates_document_types(self):
         output = self._run_seed()
         count = DocumentType.objects.filter(is_active=True).count()
-        self.assertGreaterEqual(count, 59)
+        self.assertEqual(count, 59)
         self.assertIn("Document types", output)
 
     def test_seed_is_idempotent_for_governorates(self):
@@ -1834,7 +1836,67 @@ class SeedLookupsCommandTests(APITestCase):
         self.client.force_authenticate(user=admin)
         response = self.client.get("/api/document-types/")
         self.assertEqual(response.status_code, status.HTTP_200_OK)
-        self.assertGreaterEqual(len(response.data), 59)
+        self.assertEqual(len(response.data), 59)
+
+    def test_seed_deactivates_non_approved_document_types(self):
+        extra_type = DocumentType.objects.create(
+            name="Contract Copy",
+            slug="contract-copy-en",
+            group_name="junk",
+            display_order=999,
+            is_active=True,
+        )
+
+        self._run_seed()
+        extra_type.refresh_from_db()
+
+        self.assertFalse(extra_type.is_active)
+
+    def test_document_types_api_hides_non_approved_extra_entries(self):
+        approved_type = DocumentType.objects.create(
+            name="Contract",
+            slug="contract",
+            group_name="junk",
+            display_order=999,
+            is_active=True,
+        )
+        extra_type = DocumentType.objects.create(
+            name="Contract Copy",
+            slug="contract-copy-en",
+            group_name="junk",
+            display_order=1000,
+            is_active=True,
+        )
+        admin = User.objects.create_user(username="seed_admin3", password="pass12345", role=UserRole.ADMIN)
+        self.client.force_authenticate(user=admin)
+
+        response = self.client.get("/api/document-types/")
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        returned_slugs = [item["slug"] for item in response.data]
+        returned_names = [item["name"] for item in response.data]
+        self.assertIn(approved_type.slug, returned_slugs)
+        self.assertNotIn(extra_type.slug, returned_slugs)
+        self.assertIn("عقد", returned_names)
+        self.assertNotIn("Contract Copy", returned_names)
+
+    def test_document_types_api_uses_approved_arabic_display_names(self):
+        approved_type = DocumentType.objects.create(
+            name="Contract",
+            slug="contract",
+            group_name="junk",
+            display_order=999,
+            is_active=True,
+        )
+        admin = User.objects.create_user(username="seed_admin4", password="pass12345", role=UserRole.ADMIN)
+        self.client.force_authenticate(user=admin)
+
+        response = self.client.get("/api/document-types/")
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        contract_entry = next((item for item in response.data if item["id"] == approved_type.id), None)
+        self.assertIsNotNone(contract_entry)
+        self.assertEqual(contract_entry["name"], "عقد")
 
 
 class DossierDetailDocumentVisibilityTests(APITestCase):

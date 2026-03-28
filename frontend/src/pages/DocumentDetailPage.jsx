@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { Link, useParams } from "react-router-dom";
+import { Link, useLocation, useParams } from "react-router-dom";
 import {
   getDocumentById,
   getDocumentPdfBlob,
@@ -17,6 +17,7 @@ import { formatDate } from "../utils/format";
 
 export function DocumentDetailPage() {
   const { id } = useParams();
+  const location = useLocation();
   const { user } = useAuth();
   const fileInputRef = useRef(null);
   const pdfPrintFrameRef = useRef(null);
@@ -99,10 +100,13 @@ export function DocumentDetailPage() {
 
     setIsPdfVisible(false);
     setPdfError("");
-    setFeedback({ success: "", error: "" });
+    setFeedback({
+      success: location.state?.successMessage || "",
+      error: "",
+    });
     clearPdfUrl();
     loadDocument();
-  }, [id]);
+  }, [id, location.state]);
 
   useEffect(() => {
     return () => {
@@ -223,17 +227,17 @@ export function DocumentDetailPage() {
     }
   }
 
-  async function handleResubmit() {
+  async function handleSubmitForReview({ successMessage, fallbackMessage }) {
     try {
       setIsSubmittingReview(true);
       setFeedback({ success: "", error: "" });
       await submitDocument(id);
       await refreshDocumentDetails();
-      setFeedback({ success: "تمت إعادة إرسال الوثيقة للمراجعة بنجاح.", error: "" });
+      setFeedback({ success: successMessage, error: "" });
     } catch (requestError) {
       setFeedback({
         success: "",
-        error: getErrorMessage(requestError, "تعذر إعادة إرسال الوثيقة للمراجعة."),
+        error: getErrorMessage(requestError, fallbackMessage),
       });
     } finally {
       setIsSubmittingReview(false);
@@ -252,12 +256,14 @@ export function DocumentDetailPage() {
     return <EmptyBlock message="الوثيقة غير موجودة." />;
   }
 
+  const isDraft = document.status === "draft";
   const isRejected = document.status === "rejected";
   const isDocumentCreator = user?.id === document.created_by;
   const isCreatorDataEntry = user?.role === "data_entry" && isDocumentCreator;
   const isReader = user?.role === "reader";
   const isAuditor = user?.role === "auditor";
   const isReadOnlyViewer = isReader || isAuditor;
+  const openedFromDossierCreation = Boolean(location.state?.fromDossierCreation);
   const rejectionReason = document.rejection_reason?.trim() || "لا يوجد سبب رفض مسجل";
   const compactRejectionReason = isRejected
     ? document.rejection_reason?.trim()
@@ -268,13 +274,24 @@ export function DocumentDetailPage() {
     user?.role === "data_entry" &&
     isDocumentCreator &&
     !document.is_deleted &&
-    (document.status === "draft" || isRejected);
+    (isDraft || isRejected);
   const canShowRejectedActions = isRejected && isCreatorDataEntry && !document.is_deleted;
+  const canShowDraftSubmitCard =
+    isDraft &&
+    !document.is_deleted &&
+    isDocumentCreator &&
+    (user?.role === "data_entry" || user?.role === "admin");
   const shouldShowWorkflowActions = !(isRejected && user?.role === "data_entry") && !isReader;
   const canEditDocument =
     !document.is_deleted &&
     (user?.role === "admin" || (user?.role === "data_entry" && isDocumentCreator)) &&
-    (document.status === "draft" || isRejected);
+    (isDraft || isRejected);
+  const draftSubmitTitle = openedFromDossierCreation
+    ? "تم إنشاء الإضبارة والوثيقة الأولى"
+    : "الوثيقة جاهزة للإرسال للمراجعة";
+  const draftSubmitHelper = openedFromDossierCreation
+    ? "حُفظت الوثيقة الأولى كمسودة. راجع الملف ثم أرسلها الآن للمراجعة حتى تنتقل إلى حالة قيد المراجعة."
+    : "هذه الوثيقة ما زالت مسودة. يمكنك إرسالها للمراجعة عندما تصبح جاهزة.";
   const pdfSectionTitle = isReadOnlyViewer ? "قراءة ملف PDF" : "ملف PDF";
   const pdfSectionHelper = isReader
     ? "يمكنك قراءة ملف الوثيقة وطباعته فقط. لا توجد أي صلاحيات تعديل على المحتوى."
@@ -296,6 +313,33 @@ export function DocumentDetailPage() {
 
       <AlertMessage type="success" message={feedback.success} />
       <AlertMessage type="error" message={feedback.error} />
+
+      {canShowDraftSubmitCard ? (
+        <div className="card draft-submit-card">
+          <div className="draft-submit-card__header">
+            <div>
+              <h3 className="draft-submit-card__title">{draftSubmitTitle}</h3>
+              <p className="draft-submit-card__helper">{draftSubmitHelper}</p>
+            </div>
+            <StatusBadge status={document.status} label={document.status_display_label} />
+          </div>
+          <div className="draft-submit-card__actions">
+            <button
+              type="button"
+              className="btn-primary"
+              onClick={() =>
+                handleSubmitForReview({
+                  successMessage: "تم إرسال الوثيقة للمراجعة بنجاح.",
+                  fallbackMessage: "تعذر إرسال الوثيقة للمراجعة.",
+                })
+              }
+              disabled={isSubmittingReview || isReplacingFile}
+            >
+              {isSubmittingReview ? "جارٍ الإرسال..." : "إرسال للمراجعة"}
+            </button>
+          </div>
+        </div>
+      ) : null}
 
       {isRejected ? (
         <div className="card rejection-card">
@@ -323,7 +367,12 @@ export function DocumentDetailPage() {
               <button
                 type="button"
                 className="btn-primary"
-                onClick={handleResubmit}
+                onClick={() =>
+                  handleSubmitForReview({
+                    successMessage: "تمت إعادة إرسال الوثيقة للمراجعة بنجاح.",
+                    fallbackMessage: "تعذر إعادة إرسال الوثيقة للمراجعة.",
+                  })
+                }
                 disabled={isReplacingFile || isSubmittingReview}
               >
                 {isSubmittingReview ? "جارٍ إعادة الإرسال..." : "إعادة الإرسال للمراجعة"}
@@ -453,7 +502,7 @@ export function DocumentDetailPage() {
       {shouldShowWorkflowActions ? (
         <DocumentWorkflowActions
           document={document}
-          hideSubmitAction={isRejected}
+          hideSubmitAction={isRejected || canShowDraftSubmitCard}
           onDocumentChanged={(updated) => {
             setDocument(updated);
             setFeedback({ success: "", error: "" });

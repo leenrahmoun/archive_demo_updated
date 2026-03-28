@@ -23,6 +23,7 @@ from core.access import (
     get_dossier_visibility_queryset,
     get_review_queue_queryset_for_user,
 )
+from core.document_type_catalog import get_approved_document_type_entries, get_approved_document_type_slugs
 from core.models import AuditLog, Document, DocumentStatus, DocumentType, Dossier, Governorate, User, UserRole
 from core.permissions import AdminOnlyPermission, AuditLogPermission, DocumentPermission, DossierPermission, DocumentWorkflowPermission
 from core.serializers import (
@@ -221,7 +222,36 @@ class GovernorateListAPIView(generics.ListAPIView):
 class DocumentTypeListAPIView(generics.ListAPIView):
     permission_classes = [IsAuthenticated]
     serializer_class = DocumentTypeLookupSerializer
-    queryset = DocumentType.objects.filter(is_active=True).order_by("group_name", "display_order", "id")
+
+    def get_queryset(self):
+        return DocumentType.objects.filter(
+            is_active=True,
+            slug__in=get_approved_document_type_slugs(),
+        )
+
+    def list(self, request, *args, **kwargs):
+        approved_entries = get_approved_document_type_entries()
+        document_types_by_slug = {
+            document_type.slug: document_type
+            for document_type in self.get_queryset()
+        }
+        payload = []
+
+        for entry in approved_entries:
+            document_type = document_types_by_slug.get(entry["slug"])
+            if document_type is None:
+                continue
+            payload.append(
+                {
+                    "id": document_type.id,
+                    "name": entry["name"],
+                    "slug": entry["slug"],
+                    "group_name": entry["group"],
+                    "display_order": entry["order"],
+                }
+            )
+
+        return Response(payload, status=status.HTTP_200_OK)
 
 
 class AuditLogPagination(PageNumberPagination):

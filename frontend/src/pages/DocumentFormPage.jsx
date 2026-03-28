@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { useNavigate, useParams } from "react-router-dom";
 import { createDocument, updateDocument, getDocumentById } from "../api/documentsApi";
+import { DocumentTypeAutocomplete } from "../components/DocumentTypeAutocomplete";
 import { getDocumentTypes } from "../api/lookupsApi";
 import { flattenErrors } from "../utils/errors";
 import { PageHeader } from "../components/PageHeader";
@@ -68,6 +69,11 @@ export function DocumentFormPage() {
   async function onSubmit(event) {
     event.preventDefault();
     setErrors([]);
+
+    if (!form.doc_type) {
+      setErrors(["يرجى اختيار نوع الوثيقة من القائمة المقترحة."]);
+      return;
+    }
 
     if (!selectedFile && !isEditMode) {
       setErrors(["يجب اختيار ملف PDF للوثيقة."]);
@@ -141,14 +147,15 @@ export function DocumentFormPage() {
         subtitle={isEditMode ? "تعديل بيانات الوثيقة" : `إضافة وثيقة للإضبارة رقم ${dossierId}`}
       />
       <form className="card form-grid" onSubmit={onSubmit}>
-        <select value={form.doc_type} onChange={(e) => setForm((p) => ({ ...p, doc_type: e.target.value }))} required>
-          <option value="">نوع الوثيقة</option>
-          {documentTypes.map((docType) => (
-            <option value={docType.id} key={docType.id}>
-              {docType.name}
-            </option>
-          ))}
-        </select>
+        <DocumentTypeAutocomplete
+          options={documentTypes}
+          value={form.doc_type}
+          onChange={(nextValue) => {
+            setErrors([]);
+            setForm((prev) => ({ ...prev, doc_type: nextValue }));
+          }}
+          required
+        />
         <input placeholder="رقم الوثيقة" value={form.doc_number} onChange={(e) => setForm((p) => ({ ...p, doc_number: e.target.value }))} required />
         <input placeholder="اسم الوثيقة" value={form.doc_name} onChange={(e) => setForm((p) => ({ ...p, doc_name: e.target.value }))} required />
         <input placeholder="ملاحظات (اختياري)" value={form.notes} onChange={(e) => setForm((p) => ({ ...p, notes: e.target.value }))} />
