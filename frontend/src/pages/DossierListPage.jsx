@@ -16,7 +16,6 @@ export function DossierListPage() {
     search: "",
     governorate: "",
     is_deleted: "",
-    page_size: DEFAULT_PAGE_SIZE,
   });
   const [page, setPage] = useState(1);
   const [data, setData] = useState({ count: 0, results: [], next: null, previous: null });
@@ -45,8 +44,8 @@ export function DossierListPage() {
   }, [page, filters]);
 
   const totalPages = useMemo(
-    () => Math.max(1, Math.ceil((data.count || 0) / Number(filters.page_size || DEFAULT_PAGE_SIZE))),
-    [data.count, filters.page_size]
+    () => Math.max(1, Math.ceil((data.count || 0) / DEFAULT_PAGE_SIZE)),
+    [data.count]
   );
 
   return (
@@ -55,20 +54,21 @@ export function DossierListPage() {
 
       <FilterSection>
         <input
-          placeholder="بحث: رقم الملف / الاسم / الرقم الوطني"
+          placeholder="بحث: رقم الإضبارة / الاسم / الرقم الوطني"
+          aria-label="بحث: رقم الإضبارة / الاسم / الرقم الوطني"
           value={filters.search}
-          onChange={(e) => {
+          onChange={(event) => {
             setIsLoading(true);
             setPage(1);
-            setFilters((prev) => ({ ...prev, search: e.target.value }));
+            setFilters((prev) => ({ ...prev, search: event.target.value }));
           }}
         />
         <select
           value={filters.governorate}
-          onChange={(e) => {
+          onChange={(event) => {
             setIsLoading(true);
             setPage(1);
-            setFilters((prev) => ({ ...prev, governorate: e.target.value }));
+            setFilters((prev) => ({ ...prev, governorate: event.target.value }));
           }}
         >
           <option value="">كل المحافظات</option>
@@ -80,27 +80,15 @@ export function DossierListPage() {
         </select>
         <select
           value={filters.is_deleted}
-          onChange={(e) => {
+          onChange={(event) => {
             setIsLoading(true);
             setPage(1);
-            setFilters((prev) => ({ ...prev, is_deleted: e.target.value }));
+            setFilters((prev) => ({ ...prev, is_deleted: event.target.value }));
           }}
         >
           <option value="">الكل</option>
           <option value="false">غير مؤرشفة</option>
           <option value="true">مؤرشفة</option>
-        </select>
-        <select
-          value={filters.page_size}
-          onChange={(e) => {
-            setIsLoading(true);
-            setPage(1);
-            setFilters((prev) => ({ ...prev, page_size: Number(e.target.value) }));
-          }}
-        >
-          <option value={10}>10</option>
-          <option value={20}>20</option>
-          <option value={50}>50</option>
         </select>
       </FilterSection>
 
@@ -112,10 +100,10 @@ export function DossierListPage() {
           <table className="data-table">
             <thead>
               <tr>
-                <th>رقم الملف</th>
+                <th>رقم الإضبارة</th>
                 <th>الاسم</th>
                 <th>الرقم الوطني</th>
-                <th>محافظة</th>
+                <th>المحافظة</th>
                 <th>التفاصيل</th>
               </tr>
             </thead>
@@ -125,7 +113,7 @@ export function DossierListPage() {
                   <td>{dossier.file_number}</td>
                   <td>{dossier.full_name}</td>
                   <td>{dossier.national_id}</td>
-                  <td>{dossier.governorate_name || dossier.governorate || "—"}</td>
+                  <td>{dossier.governorate_name || dossier.governorate || "-"}</td>
                   <td>
                     <Link to={`/dossiers/${dossier.id}`}>عرض</Link>
                   </td>

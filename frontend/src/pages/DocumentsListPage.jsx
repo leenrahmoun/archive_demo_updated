@@ -9,15 +9,19 @@ import { FilterSection } from "../components/FilterSection";
 import { PageHeader } from "../components/PageHeader";
 import { PaginationControls } from "../components/PaginationControls";
 import { StatusBadge } from "../components/StatusBadge";
+import { getApprovalOriginLabel, getApprovalOriginTone } from "../utils/documentReview";
 
 const DEFAULT_PAGE_SIZE = 20;
 
 export function DocumentsListPage() {
   const { user } = useAuth();
   const isAuditor = user?.role === "auditor";
+  const isReader = user?.role === "reader";
   const subtitle = isAuditor
     ? "عرض الوثائق ضمن نطاق مدخلي البيانات المرتبطين بك."
-    : "عرض حالة الوثائق مع أدوات تصفية وترتيب.";
+    : isReader
+      ? "عرض الوثائق المعتمدة فقط ضمن صلاحيات القراءة."
+      : "عرض حالة الوثائق مع أدوات تصفية وترتيب.";
 
   const [documentTypes, setDocumentTypes] = useState([]);
   const [filters, setFilters] = useState({
@@ -28,7 +32,6 @@ export function DocumentsListPage() {
     created_by: "",
     reviewed_by: "",
     ordering: "",
-    page_size: DEFAULT_PAGE_SIZE,
   });
   const [page, setPage] = useState(1);
   const [isLoading, setIsLoading] = useState(true);
@@ -57,8 +60,8 @@ export function DocumentsListPage() {
   }, [page, filters]);
 
   const totalPages = useMemo(
-    () => Math.max(1, Math.ceil((data.count || 0) / Number(filters.page_size || DEFAULT_PAGE_SIZE))),
-    [data.count, filters.page_size]
+    () => Math.max(1, Math.ceil((data.count || 0) / DEFAULT_PAGE_SIZE)),
+    [data.count]
   );
 
   function onFilterChange(key, value) {
@@ -70,22 +73,34 @@ export function DocumentsListPage() {
   return (
     <section>
       <PageHeader title="قائمة الوثائق" subtitle={subtitle} />
-      {isAuditor ? <AlertMessage type="info" message="يمكنك تصفح الوثائق المعلقة والمرفوضة والمعتمدة ضمن نطاقك فقط، دون صلاحيات تعديل المحتوى." /> : null}
+      {isAuditor ? (
+        <AlertMessage
+          type="info"
+          message="يمكنك تصفح الوثائق المعلقة والمرفوضة والمعتمدة ضمن نطاقك فقط، دون صلاحيات تعديل المحتوى."
+        />
+      ) : null}
+      {isReader ? (
+        <AlertMessage
+          type="info"
+          message="يمكنك تصفح الوثائق المعتمدة فقط، وجميع نتائج البحث تبقى ضمن هذا النطاق."
+        />
+      ) : null}
 
       <FilterSection>
         <input
-          placeholder="بحث: رقم الوثيقة / الاسم / المسار"
+          placeholder="بحث: رقم الوثيقة / اسم الوثيقة / رقم الإضبارة / المسار"
+          aria-label="بحث: رقم الوثيقة / اسم الوثيقة / رقم الإضبارة / المسار"
           value={filters.search}
-          onChange={(e) => onFilterChange("search", e.target.value)}
+          onChange={(event) => onFilterChange("search", event.target.value)}
         />
-        <select value={filters.status} onChange={(e) => onFilterChange("status", e.target.value)}>
-          <option value="">كل الحالات</option>
-          {!isAuditor && <option value="draft">draft</option>}
-          <option value="pending">pending</option>
+        <select value={filters.status} onChange={(event) => onFilterChange("status", event.target.value)}>
+          <option value="">{isReader ? "المعتمدة فقط" : "كل الحالات"}</option>
+          {!isAuditor && !isReader ? <option value="draft">draft</option> : null}
+          {!isReader ? <option value="pending">pending</option> : null}
           <option value="approved">approved</option>
-          <option value="rejected">rejected</option>
+          {!isReader ? <option value="rejected">rejected</option> : null}
         </select>
-        <select value={filters.doc_type} onChange={(e) => onFilterChange("doc_type", e.target.value)}>
+        <select value={filters.doc_type} onChange={(event) => onFilterChange("doc_type", event.target.value)}>
           <option value="">كل الأنواع</option>
           {documentTypes.map((docType) => (
             <option key={docType.id} value={docType.id}>
@@ -94,21 +109,21 @@ export function DocumentsListPage() {
           ))}
         </select>
         <input
-          placeholder="رقم الإضبارة"
+          placeholder="رقم الإضبارة أو جزء منه"
           value={filters.dossier}
-          onChange={(e) => onFilterChange("dossier", e.target.value)}
+          onChange={(event) => onFilterChange("dossier", event.target.value)}
         />
         <input
           placeholder="أنشأها المستخدم (اسم أو id)"
           value={filters.created_by}
-          onChange={(e) => onFilterChange("created_by", e.target.value)}
+          onChange={(event) => onFilterChange("created_by", event.target.value)}
         />
         <input
           placeholder="راجعها المستخدم (اسم أو id)"
           value={filters.reviewed_by}
-          onChange={(e) => onFilterChange("reviewed_by", e.target.value)}
+          onChange={(event) => onFilterChange("reviewed_by", event.target.value)}
         />
-        <select value={filters.ordering} onChange={(e) => onFilterChange("ordering", e.target.value)}>
+        <select value={filters.ordering} onChange={(event) => onFilterChange("ordering", event.target.value)}>
           <option value="">الترتيب الافتراضي (الأحدث)</option>
           <option value="status">status تصاعدي</option>
           <option value="-status">status تنازلي</option>
@@ -116,11 +131,6 @@ export function DocumentsListPage() {
           <option value="-created_at">created_at تنازلي</option>
           <option value="reviewed_at">reviewed_at تصاعدي</option>
           <option value="-reviewed_at">reviewed_at تنازلي</option>
-        </select>
-        <select value={filters.page_size} onChange={(e) => onFilterChange("page_size", Number(e.target.value))}>
-          <option value={10}>10</option>
-          <option value={20}>20</option>
-          <option value={50}>50</option>
         </select>
       </FilterSection>
 
@@ -142,28 +152,35 @@ export function DocumentsListPage() {
               </tr>
             </thead>
             <tbody>
-              {data.results.map((doc) => (
-                <tr key={doc.id}>
-                  <td>{doc.doc_number}</td>
-                  <td>{doc.doc_name}</td>
-                  <td>
-                    <StatusBadge status={doc.status} />
-                  </td>
-                  <td>{doc.dossier_name || doc.dossier}</td>
-                  <td>{doc.doc_type_name || doc.doc_type}</td>
-                  <td>
-                    {doc.is_approved_by_admin ? (
-                      <span style={{ color: "#d97706", fontWeight: "bold" }}>معتمد من الإدارة</span>
-                    ) : null}
-                    {doc.is_rejected_by_admin ? (
-                      <span style={{ color: "#be123c", fontWeight: "bold" }}>مرفوض من الإدارة</span>
-                    ) : null}
-                  </td>
-                  <td>
-                    <Link to={`/documents/${doc.id}`}>عرض</Link>
-                  </td>
-                </tr>
-              ))}
+              {data.results.map((doc) => {
+                const approvalOriginLabel = getApprovalOriginLabel(doc);
+                const approvalOriginTone = getApprovalOriginTone(doc);
+
+                return (
+                  <tr key={doc.id}>
+                    <td>{doc.doc_number}</td>
+                    <td>{doc.doc_name}</td>
+                    <td>
+                      <StatusBadge status={doc.status} />
+                      {approvalOriginLabel ? (
+                        <div className={`approval-origin-note approval-origin-note--${approvalOriginTone || "neutral"}`}>
+                          {approvalOriginLabel}
+                        </div>
+                      ) : null}
+                    </td>
+                    <td>{doc.dossier_name || doc.dossier}</td>
+                    <td>{doc.doc_type_name || doc.doc_type}</td>
+                    <td>
+                      {doc.is_rejected_by_admin ? (
+                        <span style={{ color: "#be123c", fontWeight: "bold" }}>مرفوض من الإدارة</span>
+                      ) : null}
+                    </td>
+                    <td>
+                      <Link to={`/documents/${doc.id}`}>عرض</Link>
+                    </td>
+                  </tr>
+                );
+              })}
             </tbody>
           </table>
           {!data.results.length ? <EmptyBlock message="لا توجد نتائج." /> : null}

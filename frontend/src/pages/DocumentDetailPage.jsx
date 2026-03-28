@@ -1,12 +1,18 @@
 import { useEffect, useRef, useState } from "react";
 import { Link, useParams } from "react-router-dom";
-import { getDocumentById, getDocumentPdfBlob, replaceDocumentPdf, submitDocument } from "../api/documentsApi";
+import {
+  getDocumentById,
+  getDocumentPdfBlob,
+  replaceDocumentPdf,
+  submitDocument,
+} from "../api/documentsApi";
 import { useAuth } from "../auth/useAuth";
 import { AlertMessage } from "../components/AlertMessage";
 import { DocumentWorkflowActions } from "../components/DocumentWorkflowActions";
 import { PageHeader } from "../components/PageHeader";
 import { EmptyBlock, LoadingBlock } from "../components/StateBlock";
 import { StatusBadge } from "../components/StatusBadge";
+import { getApprovalOriginLabel, getApprovalOriginTone } from "../utils/documentReview";
 import { flattenErrors } from "../utils/errors";
 import { formatDate } from "../utils/format";
 
@@ -205,10 +211,13 @@ export function DocumentDetailPage() {
     !document.is_deleted &&
     (user?.role === "admin" || (user?.role === "data_entry" && isDocumentCreator)) &&
     (document.status === "draft" || isRejected);
+  const approvalOriginLabel = getApprovalOriginLabel(document);
+  const approvalOriginTone = getApprovalOriginTone(document);
 
   return (
     <section>
       <PageHeader title="تفاصيل الوثيقة" subtitle="معلومات الوثيقة وسير العمل المرتبط بها." />
+
       <input
         ref={fileInputRef}
         type="file"
@@ -216,6 +225,7 @@ export function DocumentDetailPage() {
         style={{ display: "none" }}
         onChange={handleReplaceFileChange}
       />
+
       <AlertMessage type="success" message={feedback.success} />
       <AlertMessage type="error" message={feedback.error} />
 
@@ -263,14 +273,7 @@ export function DocumentDetailPage() {
           <strong>اسم الوثيقة:</strong> {document.doc_name}
         </p>
         <p>
-          <strong>الحالة:</strong> {document.status}
-          {"  "}
-          <StatusBadge status={document.status} />
-          {document.is_approved_by_admin ? (
-            <span style={{ color: "#d97706", fontWeight: "bold", marginRight: "8px" }}>
-              (معتمد من الإدارة)
-            </span>
-          ) : null}
+          <strong>الحالة:</strong> {document.status} <StatusBadge status={document.status} />
         </p>
         <p>
           <strong>رقم الإضبارة:</strong>{" "}
@@ -293,11 +296,20 @@ export function DocumentDetailPage() {
         <p>
           <strong>المراجع:</strong> {document.reviewed_by_name || document.reviewed_by || "-"}
         </p>
+        {approvalOriginLabel ? (
+          <p>
+            <strong>جهة الاعتماد:</strong>{" "}
+            <span className={`approval-origin-note approval-origin-note--${approvalOriginTone || "neutral"}`}>
+              {approvalOriginLabel}
+            </span>
+          </p>
+        ) : null}
         <p>
           <strong>تاريخ المراجعة:</strong> {formatDate(document.reviewed_at)}
         </p>
         <p>
-          <strong>سبب الرفض:</strong> <span className={isRejected ? "muted" : undefined}>{compactRejectionReason}</span>
+          <strong>سبب الرفض:</strong>{" "}
+          <span className={isRejected ? "muted" : undefined}>{compactRejectionReason}</span>
         </p>
         <p>
           <strong>الحذف المنطقي:</strong> {document.is_deleted ? "نعم" : "لا"}
@@ -308,6 +320,7 @@ export function DocumentDetailPage() {
         <p className="full-row">
           <strong>ملاحظات:</strong> {document.notes || "-"}
         </p>
+
         <div className="full-row" style={{ marginTop: "1rem" }}>
           <div style={{ display: "flex", gap: "0.75rem", flexWrap: "wrap", alignItems: "center" }}>
             <button type="button" className="btn-secondary" onClick={handlePdfToggle} disabled={isPdfLoading}>
@@ -329,7 +342,9 @@ export function DocumentDetailPage() {
               </a>
             ) : null}
           </div>
+
           {pdfError ? <AlertMessage type="error" message={pdfError} /> : null}
+
           {isPdfVisible ? (
             <div
               style={{

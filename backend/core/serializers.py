@@ -19,6 +19,16 @@ from core.services.dossier_service import DossierCreationError, create_dossier_w
 
 User = get_user_model()
 
+ROLE_CHANGE_BLOCKING_DOCUMENT_STATUSES = (
+    DocumentStatus.DRAFT,
+    DocumentStatus.REJECTED,
+    DocumentStatus.PENDING,
+)
+DATA_ENTRY_ROLE_CHANGE_BLOCKED_MESSAGE = (
+    "لا يمكن تغيير دور هذا المستخدم لأنه يملك وثائق غير منتهية (مسودة / مرفوضة / قيد المراجعة)."
+)
+AUDITOR_ROLE_CHANGE_BLOCKED_MESSAGE = "لا يمكن تغيير دور هذا المدقق لأنه ما زال مرتبطًا بمدخلي بيانات."
+
 
 class MinimalUserSerializer(serializers.ModelSerializer):
     full_name = serializers.SerializerMethodField()
@@ -77,11 +87,33 @@ class UserManagementSerializer(serializers.ModelSerializer):
         )
         read_only_fields = ("date_joined",)
 
+    def validate_role_change(self, next_role):
+        if self.instance is None:
+            return
+
+        current_role = self.instance.role
+        if current_role == next_role:
+            return
+
+        if current_role == UserRole.DATA_ENTRY:
+            has_blocking_documents = self.instance.created_documents.filter(
+                status__in=ROLE_CHANGE_BLOCKING_DOCUMENT_STATUSES,
+                is_deleted=False,
+            ).exists()
+            if has_blocking_documents:
+                raise serializers.ValidationError({"role": DATA_ENTRY_ROLE_CHANGE_BLOCKED_MESSAGE})
+
+        if current_role == UserRole.AUDITOR:
+            has_assigned_data_entries = self.instance.assigned_data_entries.filter(role=UserRole.DATA_ENTRY).exists()
+            if has_assigned_data_entries:
+                raise serializers.ValidationError({"role": AUDITOR_ROLE_CHANGE_BLOCKED_MESSAGE})
+
     def validate(self, data):
         role = data.get("role") or getattr(self.instance, "role", None)
         assigned_auditor = data.get("assigned_auditor", getattr(self.instance, "assigned_auditor", None))
         if self.instance is None and not data.get("password"):
             raise serializers.ValidationError({"password": "Password is required when creating a user."})
+        self.validate_role_change(role)
         if role != UserRole.DATA_ENTRY:
             data["assigned_auditor"] = None
             return data

@@ -253,6 +253,25 @@ button:disabled {
   color: #5b708a;
 }
 
+.approval-origin-note {
+  display: block;
+  margin-top: 0.35rem;
+  font-size: 0.84rem;
+  font-weight: 600;
+}
+
+.approval-origin-note--admin {
+  color: #b45309;
+}
+
+.approval-origin-note--auditor {
+  color: #166534;
+}
+
+.approval-origin-note--neutral {
+  color: #34506b;
+}
+
 .error {
   color: #b42318;
 }

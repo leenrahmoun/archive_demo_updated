@@ -11,10 +11,12 @@ from rest_framework.views import APIView
 from django.utils import timezone
 
 from core.access import (
+    apply_document_advanced_filters,
+    apply_dossier_advanced_filters,
     get_document_detail_queryset_for_user,
-    get_document_queryset_for_user,
+    get_document_visibility_queryset,
     get_document_review_scope_queryset_for_user,
-    get_dossier_queryset_for_user,
+    get_dossier_visibility_queryset,
     get_review_queue_queryset_for_user,
 )
 from core.models import AuditLog, Document, DocumentStatus, DocumentType, Dossier, Governorate, User, UserRole
@@ -56,33 +58,13 @@ class DossierListCreateAPIView(generics.ListCreateAPIView):
     parser_classes = [JSONParser, FormParser, MultiPartParser]
     queryset = Dossier.objects.all().order_by("-created_at", "-id")
     pagination_class = StandardListPagination
-    filter_backends = [filters.SearchFilter, filters.OrderingFilter]
-    search_fields = ["file_number", "full_name", "national_id"]
+    filter_backends = [filters.OrderingFilter]
     ordering_fields = ["file_number", "full_name", "created_at"]
     ordering = ["-created_at", "-id"]
 
     def get_queryset(self):
-        queryset = get_dossier_queryset_for_user(self.request.user).order_by("-created_at", "-id")
-
-        query_params = self.request.query_params
-
-        governorate = query_params.get("governorate")
-        if governorate and governorate.isdigit():
-            queryset = queryset.filter(governorate_id=int(governorate))
-
-        created_by = query_params.get("created_by")
-        if created_by and created_by.isdigit():
-            queryset = queryset.filter(created_by_id=int(created_by))
-
-        is_deleted = query_params.get("is_deleted")
-        if is_deleted is not None:
-            lowered = is_deleted.lower()
-            if lowered in {"true", "1"}:
-                queryset = queryset.filter(is_archived=True)
-            elif lowered in {"false", "0"}:
-                queryset = queryset.filter(is_archived=False)
-
-        return queryset
+        queryset = get_dossier_visibility_queryset(self.request.user).select_related("governorate", "created_by")
+        return apply_dossier_advanced_filters(queryset, self.request.query_params, self.request.user)
 
     def get_serializer_class(self):
         if self.request.method == "POST":
@@ -127,7 +109,7 @@ class DossierRetrieveAPIView(generics.RetrieveAPIView):
     serializer_class = DossierDetailSerializer
 
     def get_queryset(self):
-        return get_dossier_queryset_for_user(self.request.user)
+        return get_dossier_visibility_queryset(self.request.user)
 
 
 class DocumentListAPIView(generics.ListCreateAPIView):
@@ -140,49 +122,18 @@ class DocumentListAPIView(generics.ListCreateAPIView):
         return DocumentSummarySerializer
 
     pagination_class = StandardListPagination
-    filter_backends = [filters.SearchFilter, filters.OrderingFilter]
-    search_fields = ["doc_number", "doc_name", "file_path"]
+    filter_backends = [filters.OrderingFilter]
     ordering_fields = ["status", "created_at", "reviewed_at"]
     ordering = ["-created_at", "-id"]
 
     def get_queryset(self):
-        user = self.request.user
-        query_params = self.request.query_params
-        deleted_state = False
-
-        is_deleted = query_params.get("is_deleted")
-        if is_deleted is not None:
-            lowered = is_deleted.lower()
-            if lowered in {"true", "1"}:
-                deleted_state = True
-            elif lowered in {"false", "0"}:
-                deleted_state = False
-
-        queryset = get_document_queryset_for_user(user, deleted_state=deleted_state).order_by("-created_at", "-id")
-
-        status_param = query_params.get("status")
-        if status_param:
-            queryset = queryset.filter(status=status_param)
-
-        doc_type = query_params.get("doc_type")
-        if doc_type and doc_type.isdigit():
-            queryset = queryset.filter(doc_type_id=int(doc_type))
-
-        dossier = query_params.get("dossier")
-        if dossier and dossier.isdigit():
-            queryset = queryset.filter(dossier_id=int(dossier))
-
-        created_by = query_params.get("created_by")
-        if created_by and created_by.isdigit():
-            queryset = queryset.filter(created_by_id=int(created_by))
-
-        reviewed_by = query_params.get("reviewed_by")
-        if reviewed_by and reviewed_by.isdigit():
-            queryset = queryset.filter(reviewed_by_id=int(reviewed_by))
-        elif reviewed_by == "null":
-            queryset = queryset.filter(reviewed_by__isnull=True)
-
-        return queryset
+        queryset = get_document_visibility_queryset(self.request.user).select_related(
+            "dossier",
+            "doc_type",
+            "created_by",
+            "reviewed_by",
+        )
+        return apply_document_advanced_filters(queryset, self.request.query_params, self.request.user)
 
 
 class DocumentRetrieveAPIView(generics.RetrieveUpdateAPIView):
