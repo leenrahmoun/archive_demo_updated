@@ -1,28 +1,9 @@
 import { useMemo, useState } from "react";
 import { approveDocument, rejectDocument, softDeleteDocument, submitDocument } from "../api/documentsApi";
 import { useAuth } from "../auth/useAuth";
+import { getDocumentWorkflowActionState } from "../utils/documentWorkflow";
 import { flattenErrors } from "../utils/errors";
 import { AlertMessage } from "./AlertMessage";
-
-function getActionState(role, document, { hideSubmitAction = false } = {}) {
-  const status = document?.status;
-  const isDeleted = Boolean(document?.is_deleted);
-
-  const canSubmitRole = role === "admin" || role === "data_entry";
-  const canReviewRole = role === "admin" || role === "auditor";
-  const canDeleteRole = role === "admin" || role === "data_entry";
-
-  return {
-    showSubmit: canSubmitRole && !hideSubmitAction,
-    submitEnabled: canSubmitRole && !isDeleted && (status === "draft" || status === "rejected"),
-    showApprove: canReviewRole,
-    approveEnabled: canReviewRole && !isDeleted && status === "pending",
-    showReject: canReviewRole,
-    rejectEnabled: canReviewRole && !isDeleted && status === "pending",
-    showDelete: canDeleteRole,
-    deleteEnabled: !isDeleted && (role === "admin" || (role === "data_entry" && status === "draft")),
-  };
-}
 
 export function DocumentWorkflowActions({ document, onDocumentChanged, hideSubmitAction = false }) {
   const { user } = useAuth();
@@ -32,8 +13,8 @@ export function DocumentWorkflowActions({ document, onDocumentChanged, hideSubmi
   const [rejectReason, setRejectReason] = useState("");
 
   const actionState = useMemo(
-    () => getActionState(user?.role, document, { hideSubmitAction }),
-    [hideSubmitAction, user?.role, document]
+    () => getDocumentWorkflowActionState(user, document, { hideSubmitAction }),
+    [hideSubmitAction, user, document]
   );
   const hasAnyActions = actionState.showSubmit || actionState.showApprove || actionState.showReject || actionState.showDelete;
   const status = document?.status;

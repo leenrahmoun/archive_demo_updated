@@ -14,6 +14,7 @@ import { EmptyBlock, LoadingBlock } from "../components/StateBlock";
 import { StatusBadge } from "../components/StatusBadge";
 import { flattenErrors } from "../utils/errors";
 import { formatDate } from "../utils/format";
+import { getDocumentDetailSubmitPlacement, getDocumentWorkflowActionState } from "../utils/documentWorkflow";
 
 export function DocumentDetailPage() {
   const { id } = useParams();
@@ -259,7 +260,6 @@ export function DocumentDetailPage() {
   const isDraft = document.status === "draft";
   const isRejected = document.status === "rejected";
   const isDocumentCreator = user?.id === document.created_by;
-  const isCreatorDataEntry = user?.role === "data_entry" && isDocumentCreator;
   const isReader = user?.role === "reader";
   const isAuditor = user?.role === "auditor";
   const isReadOnlyViewer = isReader || isAuditor;
@@ -275,13 +275,27 @@ export function DocumentDetailPage() {
     isDocumentCreator &&
     !document.is_deleted &&
     (isDraft || isRejected);
-  const canShowRejectedActions = isRejected && isCreatorDataEntry && !document.is_deleted;
-  const canShowDraftSubmitCard =
-    isDraft &&
-    !document.is_deleted &&
-    isDocumentCreator &&
-    (user?.role === "data_entry" || user?.role === "admin");
-  const shouldShowWorkflowActions = !(isRejected && user?.role === "data_entry") && !isReader;
+  const submitPlacement = getDocumentDetailSubmitPlacement(user, document);
+  const canShowDraftSubmitCard = submitPlacement === "draft-card";
+  const canShowRejectedResubmitAction = submitPlacement === "rejection-card";
+  const canShowRejectedReplaceAction = isRejected && canReplacePdf;
+  const canShowRejectedActions = canShowRejectedReplaceAction || canShowRejectedResubmitAction;
+  const lowerWorkflowHideSubmitAction = submitPlacement !== "none";
+  const lowerWorkflowActionState = getDocumentWorkflowActionState(user, document, {
+    hideSubmitAction: lowerWorkflowHideSubmitAction,
+  });
+  const shouldShowWorkflowActions =
+    !isReader &&
+    !(
+      isRejected &&
+      user?.role === "data_entry"
+    ) &&
+    (
+      lowerWorkflowActionState.showSubmit ||
+      lowerWorkflowActionState.showApprove ||
+      lowerWorkflowActionState.showReject ||
+      lowerWorkflowActionState.showDelete
+    );
   const canEditDocument =
     !document.is_deleted &&
     (user?.role === "admin" || (user?.role === "data_entry" && isDocumentCreator)) &&
@@ -356,27 +370,31 @@ export function DocumentDetailPage() {
           </p>
           {canShowRejectedActions ? (
             <div className="rejection-card__actions">
-              <button
-                type="button"
-                className="btn-secondary"
-                onClick={handleReplaceClick}
-                disabled={isReplacingFile || isSubmittingReview}
-              >
-                {isReplacingFile ? "جارٍ استبدال الملف..." : "استبدال ملف PDF"}
-              </button>
-              <button
-                type="button"
-                className="btn-primary"
-                onClick={() =>
-                  handleSubmitForReview({
-                    successMessage: "تمت إعادة إرسال الوثيقة للمراجعة بنجاح.",
-                    fallbackMessage: "تعذر إعادة إرسال الوثيقة للمراجعة.",
-                  })
-                }
-                disabled={isReplacingFile || isSubmittingReview}
-              >
-                {isSubmittingReview ? "جارٍ إعادة الإرسال..." : "إعادة الإرسال للمراجعة"}
-              </button>
+              {canShowRejectedReplaceAction ? (
+                <button
+                  type="button"
+                  className="btn-secondary"
+                  onClick={handleReplaceClick}
+                  disabled={isReplacingFile || isSubmittingReview}
+                >
+                  {isReplacingFile ? "جارٍ استبدال الملف..." : "استبدال ملف PDF"}
+                </button>
+              ) : null}
+              {canShowRejectedResubmitAction ? (
+                <button
+                  type="button"
+                  className="btn-primary"
+                  onClick={() =>
+                    handleSubmitForReview({
+                      successMessage: "تمت إعادة إرسال الوثيقة للمراجعة بنجاح.",
+                      fallbackMessage: "تعذر إعادة إرسال الوثيقة للمراجعة.",
+                    })
+                  }
+                  disabled={isReplacingFile || isSubmittingReview}
+                >
+                  {isSubmittingReview ? "جارٍ إعادة الإرسال..." : "إعادة الإرسال للمراجعة"}
+                </button>
+              ) : null}
             </div>
           ) : null}
         </div>
@@ -502,7 +520,7 @@ export function DocumentDetailPage() {
       {shouldShowWorkflowActions ? (
         <DocumentWorkflowActions
           document={document}
-          hideSubmitAction={isRejected || canShowDraftSubmitCard}
+          hideSubmitAction={lowerWorkflowHideSubmitAction}
           onDocumentChanged={(updated) => {
             setDocument(updated);
             setFeedback({ success: "", error: "" });
