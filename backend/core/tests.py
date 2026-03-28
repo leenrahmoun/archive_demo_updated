@@ -1532,6 +1532,21 @@ class AdminUserManagementApiTests(APITestCase):
         self.assertIn("results", response.data)
         self.assertEqual(response.data["count"], 5)  # all users created in setUp
 
+    def test_user_management_response_includes_human_readable_assignment_fields(self):
+        self.auditor.first_name = "Audit"
+        self.auditor.last_name = "Owner"
+        self.auditor.save()
+        self.data_entry.assigned_auditor = self.auditor
+        self.data_entry.save()
+
+        response = self.client.get(f"/api/users/{self.data_entry.id}/")
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response.data["assigned_auditor_id"], self.auditor.id)
+        self.assertEqual(response.data["assigned_auditor_username"], self.auditor.username)
+        self.assertEqual(response.data["assigned_auditor"]["id"], self.auditor.id)
+        self.assertEqual(response.data["assigned_auditor"]["username"], self.auditor.username)
+        self.assertEqual(response.data["assigned_auditor"]["full_name"], "Audit Owner")
+
     def test_non_admin_cannot_list_users(self):
         """Non-admin users are denied access to user list."""
         self.client.force_authenticate(user=self.auditor)
@@ -1570,6 +1585,10 @@ class AdminUserManagementApiTests(APITestCase):
 
     def test_admin_can_create_data_entry_with_assigned_auditor(self):
         """Admin can create data_entry user with assigned_auditor."""
+        self.auditor.first_name = "Scope"
+        self.auditor.last_name = "Reviewer"
+        self.auditor.save()
+
         payload = {
             "username": "new_entry_with_auditor",
             "password": "newpass123",
@@ -1583,6 +1602,20 @@ class AdminUserManagementApiTests(APITestCase):
         response = self.client.post("/api/users/", payload, format="json")
         self.assertEqual(response.status_code, status.HTTP_201_CREATED)
         self.assertEqual(response.data["assigned_auditor_id"], self.auditor.id)
+        self.assertEqual(response.data["assigned_auditor_username"], self.auditor.username)
+        self.assertEqual(response.data["assigned_auditor"]["full_name"], "Scope Reviewer")
+
+    def test_admin_cannot_assign_non_auditor_as_assigned_auditor(self):
+        payload = {
+            "username": "entry_with_reader_assignment",
+            "password": "newpass123",
+            "role": UserRole.DATA_ENTRY,
+            "is_active": True,
+            "assigned_auditor_id": self.reader.id,
+        }
+        response = self.client.post("/api/users/", payload, format="json")
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn("assigned_auditor_id", response.data)
 
     def test_admin_cannot_create_non_data_entry_with_assigned_auditor(self):
         """Admin cannot assign auditor to non-data_entry user."""
@@ -1604,6 +1637,9 @@ class AdminUserManagementApiTests(APITestCase):
 
     def test_admin_can_update_user_role(self):
         """Admin can update user role via PUT /api/users/{id}/."""
+        self.data_entry.assigned_auditor = self.auditor
+        self.data_entry.save()
+
         payload = {
             "username": self.data_entry.username,
             "first_name": "Updated",
@@ -1615,6 +1651,9 @@ class AdminUserManagementApiTests(APITestCase):
         response = self.client.put(f"/api/users/{self.data_entry.id}/", payload, format="json")
         self.assertEqual(response.status_code, status.HTTP_200_OK)
         self.assertEqual(response.data["role"], UserRole.AUDITOR)
+        self.assertIsNone(response.data["assigned_auditor_id"])
+        self.data_entry.refresh_from_db()
+        self.assertIsNone(self.data_entry.assigned_auditor)
 
     def test_admin_can_assign_auditor_to_data_entry(self):
         """Admin can assign auditor to existing data_entry user."""
@@ -1630,6 +1669,26 @@ class AdminUserManagementApiTests(APITestCase):
         response = self.client.put(f"/api/users/{self.data_entry.id}/", payload, format="json")
         self.assertEqual(response.status_code, status.HTTP_200_OK)
         self.assertEqual(response.data["assigned_auditor_id"], self.auditor.id)
+
+    def test_admin_can_change_assigned_auditor_for_existing_data_entry(self):
+        self.data_entry.assigned_auditor = self.auditor
+        self.data_entry.save()
+
+        payload = {
+            "username": self.data_entry.username,
+            "first_name": self.data_entry.first_name,
+            "last_name": self.data_entry.last_name,
+            "email": self.data_entry.email,
+            "role": UserRole.DATA_ENTRY,
+            "is_active": True,
+            "assigned_auditor_id": self.auditor2.id,
+        }
+        response = self.client.put(f"/api/users/{self.data_entry.id}/", payload, format="json")
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response.data["assigned_auditor_id"], self.auditor2.id)
+        self.assertEqual(response.data["assigned_auditor_username"], self.auditor2.username)
+        self.data_entry.refresh_from_db()
+        self.assertEqual(self.data_entry.assigned_auditor_id, self.auditor2.id)
 
     def test_admin_cannot_remove_assigned_auditor_from_data_entry(self):
         self.data_entry.assigned_auditor = self.auditor
@@ -1702,6 +1761,21 @@ class AdminUserManagementApiTests(APITestCase):
         }
         response = self.client.put(f"/api/users/{self.data_entry.id}/", payload, format="json")
         self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
+
+    def test_admin_can_optionally_change_password_on_edit(self):
+        payload = {
+            "username": self.reader.username,
+            "first_name": self.reader.first_name,
+            "last_name": self.reader.last_name,
+            "email": self.reader.email,
+            "role": self.reader.role,
+            "is_active": self.reader.is_active,
+            "password": "new-reader-pass-123",
+        }
+        response = self.client.put(f"/api/users/{self.reader.id}/", payload, format="json")
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.reader.refresh_from_db()
+        self.assertTrue(self.reader.check_password("new-reader-pass-123"))
 
     def test_password_is_write_only(self):
         """Password field is write-only and not returned in response."""

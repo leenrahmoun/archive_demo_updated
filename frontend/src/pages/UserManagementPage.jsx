@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { createUser, deleteUser, getUsers, updateUser } from "../api/usersApi";
 import { useAuth } from "../auth/useAuth";
 import { AlertMessage } from "../components/AlertMessage";
@@ -261,7 +261,7 @@ export function UserManagementPage() {
   const [hasNextPage, setHasNextPage] = useState(false);
   const [hasPreviousPage, setHasPreviousPage] = useState(false);
 
-  async function loadControlPanel(targetPage = page, showLoadingState = false) {
+  const loadControlPanel = useCallback(async (targetPage, showLoadingState = false) => {
     if (showLoadingState) {
       setIsLoading(true);
     }
@@ -300,7 +300,7 @@ export function UserManagementPage() {
         setIsLoading(false);
       }
     }
-  }
+  }, []);
 
   useEffect(() => {
     if (!user || user.role !== "admin") {
@@ -308,7 +308,7 @@ export function UserManagementPage() {
     }
 
     loadControlPanel(page, true);
-  }, [page, user]);
+  }, [loadControlPanel, page, user]);
 
   function handleFormChange(setForm, setError) {
     return (event) => {
