@@ -1,3 +1,7 @@
+from pathlib import Path
+
+from django.core.files.storage import default_storage
+from django.http import FileResponse, Http404
 from rest_framework import filters, generics, status
 from rest_framework.parsers import FormParser, JSONParser, MultiPartParser
 from rest_framework.pagination import PageNumberPagination
@@ -11,6 +15,7 @@ from core.permissions import AdminOnlyPermission, AuditLogPermission, DocumentPe
 from core.serializers import (
     AuditLogSerializer,
     DocumentCreateSerializer,
+    DocumentReplaceFileSerializer,
     DocumentRejectSerializer,
     DocumentSummarySerializer,
     DocumentTypeLookupSerializer,
@@ -37,6 +42,17 @@ class StandardListPagination(PageNumberPagination):
     page_size = 20
     page_size_query_param = "page_size"
     max_page_size = 100
+
+
+def get_document_detail_queryset_for_user(user):
+    queryset = Document.objects.filter(is_deleted=False)
+    if user.role == UserRole.READER:
+        return queryset.filter(status=DocumentStatus.APPROVED)
+    if user.role == UserRole.AUDITOR:
+        return queryset.filter(status__in=[DocumentStatus.PENDING, DocumentStatus.APPROVED])
+    if user.role == UserRole.DATA_ENTRY:
+        return queryset.filter(created_by=user)
+    return queryset
 
 
 class DossierListCreateAPIView(generics.ListCreateAPIView):
@@ -217,15 +233,51 @@ class DocumentRetrieveAPIView(generics.RetrieveUpdateAPIView):
         return DocumentSummarySerializer
 
     def get_queryset(self):
-        user = self.request.user
-        queryset = Document.objects.filter(is_deleted=False)
-        if user.role == UserRole.READER:
-            return queryset.filter(status="approved")
-        if user.role == UserRole.AUDITOR:
-            return queryset.filter(status__in=["pending", "approved"])
-        if user.role == UserRole.DATA_ENTRY:
-            return queryset.filter(created_by=user)
-        return queryset
+        return get_document_detail_queryset_for_user(self.request.user)
+
+
+class DocumentFileAccessAPIView(APIView):
+    permission_classes = [DocumentPermission]
+
+    def get(self, request, pk, *args, **kwargs):
+        document = generics.get_object_or_404(get_document_detail_queryset_for_user(request.user), pk=pk)
+
+        try:
+            file_handle = default_storage.open(document.file_path, "rb")
+        except FileNotFoundError as exc:
+            raise Http404("Document file not found.") from exc
+
+        filename = Path(document.file_path).name or f"document-{document.id}.pdf"
+        return FileResponse(
+            file_handle,
+            content_type=document.mime_type or Document.PDF_MIME_TYPE,
+            filename=filename,
+        )
+
+
+class DocumentReplaceFileAPIView(APIView):
+    permission_classes = [IsAuthenticated, DocumentPermission]
+    parser_classes = [FormParser, MultiPartParser]
+
+    def post(self, request, pk, *args, **kwargs):
+        if request.user.role != UserRole.DATA_ENTRY:
+            return Response(
+                {"detail": "You do not have permission to replace document files."},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+
+        document = generics.get_object_or_404(
+            Document.objects.filter(created_by=request.user, is_deleted=False),
+            pk=pk,
+        )
+        serializer = DocumentReplaceFileSerializer(
+            instance=document,
+            data=request.data,
+            context={"request": request},
+        )
+        serializer.is_valid(raise_exception=True)
+        document = serializer.save()
+        return Response(DocumentSummarySerializer(document).data, status=status.HTTP_200_OK)
 
 
 class MeAPIView(APIView):

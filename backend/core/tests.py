@@ -42,6 +42,13 @@ class TemporaryMediaRootMixin:
     def assertStoredFileExists(self, file_path):
         self.assertTrue((Path(settings.MEDIA_ROOT) / file_path).exists())
 
+    def write_stored_pdf(self, file_path, size_kb=120):
+        full_path = Path(settings.MEDIA_ROOT) / file_path
+        full_path.parent.mkdir(parents=True, exist_ok=True)
+        header = b"%PDF-1.4\n"
+        payload_size = max((size_kb * 1024) - len(header), 0)
+        full_path.write_bytes(header + (b"0" * payload_size))
+
 
 class DossierApiTests(TemporaryMediaRootMixin, APITestCase):
     def setUp(self):
@@ -236,7 +243,12 @@ class DocumentWorkflowApiTests(APITestCase):
         self.document.refresh_from_db()
         self.assertEqual(self.document.status, DocumentStatus.APPROVED)
         self.assertEqual(self.document.reviewed_by_id, self.auditor.id)
-        self.assertTrue(AuditLog.objects.filter(action=AuditAction.APPROVE, entity_id=self.document.id).exists())
+        audit_log = AuditLog.objects.get(action=AuditAction.APPROVE, entity_id=self.document.id)
+        self.assertEqual(audit_log.old_values["status"], DocumentStatus.PENDING)
+        self.assertIsNone(audit_log.old_values["reviewed_at"])
+        self.assertEqual(audit_log.new_values["status"], DocumentStatus.APPROVED)
+        self.assertEqual(audit_log.new_values["reviewed_by"], self.auditor.id)
+        self.assertIsInstance(audit_log.new_values["reviewed_at"], str)
 
     def test_reject_requires_rejection_reason(self):
         self.document.status = DocumentStatus.PENDING
@@ -258,7 +270,13 @@ class DocumentWorkflowApiTests(APITestCase):
         self.document.refresh_from_db()
         self.assertEqual(self.document.status, DocumentStatus.REJECTED)
         self.assertEqual(self.document.rejection_reason, "Mismatch in document number")
-        self.assertTrue(AuditLog.objects.filter(action=AuditAction.REJECT, entity_id=self.document.id).exists())
+        audit_log = AuditLog.objects.get(action=AuditAction.REJECT, entity_id=self.document.id)
+        self.assertEqual(audit_log.old_values["status"], DocumentStatus.PENDING)
+        self.assertIsNone(audit_log.old_values["reviewed_at"])
+        self.assertEqual(audit_log.new_values["status"], DocumentStatus.REJECTED)
+        self.assertEqual(audit_log.new_values["reviewed_by"], self.auditor.id)
+        self.assertEqual(audit_log.new_values["rejection_reason"], "Mismatch in document number")
+        self.assertIsInstance(audit_log.new_values["reviewed_at"], str)
 
     def test_invalid_transition_approved_cannot_be_submitted(self):
         self.document.status = DocumentStatus.APPROVED
@@ -717,6 +735,24 @@ class DocumentCreateUpdateApiTests(TemporaryMediaRootMixin, APITestCase):
             is_archived=True,
         )
 
+    def create_document_with_stored_file(self, *, status_value, created_by=None, dossier=None, rejection_reason=None):
+        created_by = created_by or self.data_entry
+        dossier = dossier or self.dossier_1
+        relative_path = f"uploads/dossier_{dossier.id}/{uuid4().hex}.pdf"
+        self.write_stored_pdf(relative_path)
+        return Document.objects.create(
+            dossier=dossier,
+            doc_type=self.doc_type_1,
+            doc_number=f"DOC-{uuid4().hex[:8]}",
+            doc_name="Stored Document",
+            file_path=relative_path,
+            file_size_kb=120,
+            mime_type="application/pdf",
+            status=status_value,
+            rejection_reason=rejection_reason,
+            created_by=created_by,
+        )
+
     def test_create_document_success(self):
         payload = {
             "dossier": str(self.dossier_1.id),
@@ -848,6 +884,266 @@ class DocumentCreateUpdateApiTests(TemporaryMediaRootMixin, APITestCase):
         # Verify document was not modified
         other_doc.refresh_from_db()
         self.assertEqual(other_doc.doc_number, "OTHER-DOC-2")
+
+    def test_replace_own_draft_file_succeeds(self):
+        document = self.create_document_with_stored_file(status_value=DocumentStatus.DRAFT)
+        old_updated_at = document.updated_at
+        old_file_path = document.file_path
+
+        response = self.client.post(
+            f"/api/documents/{document.id}/replace-file/",
+            {"file": self.make_uploaded_pdf(name="replacement-draft.pdf", size_kb=220)},
+            format="multipart",
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        document.refresh_from_db()
+        self.assertEqual(document.status, DocumentStatus.DRAFT)
+        self.assertNotEqual(document.file_path, old_file_path)
+        self.assertEqual(document.file_size_kb, 220)
+        self.assertEqual(document.mime_type, "application/pdf")
+        self.assertGreater(document.updated_at, old_updated_at)
+        self.assertStoredFileExists(document.file_path)
+
+    def test_replace_own_rejected_file_succeeds(self):
+        document = self.create_document_with_stored_file(
+            status_value=DocumentStatus.REJECTED,
+            rejection_reason="Initial rejection reason",
+        )
+        old_file_path = document.file_path
+
+        response = self.client.post(
+            f"/api/documents/{document.id}/replace-file/",
+            {"file": self.make_uploaded_pdf(name="replacement-rejected.pdf", size_kb=240)},
+            format="multipart",
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        document.refresh_from_db()
+        self.assertEqual(document.status, DocumentStatus.REJECTED)
+        self.assertEqual(document.rejection_reason, "Initial rejection reason")
+        self.assertNotEqual(document.file_path, old_file_path)
+        self.assertEqual(document.file_size_kb, 240)
+        self.assertStoredFileExists(document.file_path)
+
+    def test_replace_pending_file_fails(self):
+        document = self.create_document_with_stored_file(status_value=DocumentStatus.PENDING)
+        old_file_path = document.file_path
+
+        response = self.client.post(
+            f"/api/documents/{document.id}/replace-file/",
+            {"file": self.make_uploaded_pdf(name="replacement-pending.pdf", size_kb=220)},
+            format="multipart",
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertEqual(response.data["detail"][0], "Document file can only be replaced when status is draft or rejected.")
+        document.refresh_from_db()
+        self.assertEqual(document.file_path, old_file_path)
+        self.assertStoredFileExists(old_file_path)
+
+    def test_replace_approved_file_fails(self):
+        document = self.create_document_with_stored_file(status_value=DocumentStatus.APPROVED)
+        old_file_path = document.file_path
+
+        response = self.client.post(
+            f"/api/documents/{document.id}/replace-file/",
+            {"file": self.make_uploaded_pdf(name="replacement-approved.pdf", size_kb=220)},
+            format="multipart",
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertEqual(response.data["detail"][0], "Document file can only be replaced when status is draft or rejected.")
+        document.refresh_from_db()
+        self.assertEqual(document.file_path, old_file_path)
+        self.assertStoredFileExists(old_file_path)
+
+    def test_replace_other_users_file_fails(self):
+        other_user = User.objects.create_user(username="replace_other", password="pass12345", role=UserRole.DATA_ENTRY)
+        document = self.create_document_with_stored_file(
+            status_value=DocumentStatus.DRAFT,
+            created_by=other_user,
+        )
+
+        response = self.client.post(
+            f"/api/documents/{document.id}/replace-file/",
+            {"file": self.make_uploaded_pdf(name="replacement-other.pdf", size_kb=220)},
+            format="multipart",
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_404_NOT_FOUND)
+
+    def test_replace_non_pdf_fails(self):
+        document = self.create_document_with_stored_file(status_value=DocumentStatus.DRAFT)
+        old_file_path = document.file_path
+
+        response = self.client.post(
+            f"/api/documents/{document.id}/replace-file/",
+            {
+                "file": self.make_uploaded_pdf(
+                    name="replacement.txt",
+                    size_kb=220,
+                    content_type="text/plain",
+                )
+            },
+            format="multipart",
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn("file", response.data)
+        document.refresh_from_db()
+        self.assertEqual(document.file_path, old_file_path)
+        self.assertStoredFileExists(old_file_path)
+
+    def test_replace_file_creates_audit_log_and_removes_old_file(self):
+        document = self.create_document_with_stored_file(status_value=DocumentStatus.DRAFT)
+        old_file_path = document.file_path
+        old_full_path = Path(settings.MEDIA_ROOT) / old_file_path
+
+        response = self.client.post(
+            f"/api/documents/{document.id}/replace-file/",
+            {"file": self.make_uploaded_pdf(name="replacement-audit.pdf", size_kb=260)},
+            format="multipart",
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        document.refresh_from_db()
+        audit_log = AuditLog.objects.get(action=AuditAction.REPLACE_FILE, entity_id=document.id)
+        self.assertEqual(audit_log.old_values["file_path"], old_file_path)
+        self.assertEqual(audit_log.old_values["status"], DocumentStatus.DRAFT)
+        self.assertEqual(audit_log.new_values["file_path"], document.file_path)
+        self.assertEqual(audit_log.new_values["file_size_kb"], 260)
+        self.assertEqual(audit_log.new_values["status"], DocumentStatus.DRAFT)
+        self.assertFalse(old_full_path.exists())
+        self.assertStoredFileExists(document.file_path)
+
+
+class DocumentFileAccessApiTests(TemporaryMediaRootMixin, APITestCase):
+    def setUp(self):
+        super().setUp()
+        self.admin = User.objects.create_user(username="file_admin", password="pass12345", role=UserRole.ADMIN)
+        self.data_entry = User.objects.create_user(username="file_entry", password="pass12345", role=UserRole.DATA_ENTRY)
+        self.other_data_entry = User.objects.create_user(
+            username="file_entry_other",
+            password="pass12345",
+            role=UserRole.DATA_ENTRY,
+        )
+        self.auditor = User.objects.create_user(username="file_auditor", password="pass12345", role=UserRole.AUDITOR)
+        self.reader = User.objects.create_user(username="file_reader", password="pass12345", role=UserRole.READER)
+
+        self.doc_type = DocumentType.objects.create(
+            name="File Access Type",
+            slug="file-access-type",
+            group_name="core",
+            display_order=1,
+            is_active=True,
+        )
+
+        self.dossier = Dossier.objects.create(
+            file_number="DOS-FILE-001",
+            full_name="File Access User",
+            national_id="N-FILE-001",
+            personal_id="P-FILE-001",
+            room_number="1",
+            column_number="2",
+            shelf_number="3",
+            created_by=self.data_entry,
+        )
+        self.other_dossier = Dossier.objects.create(
+            file_number="DOS-FILE-002",
+            full_name="Other File User",
+            national_id="N-FILE-002",
+            personal_id="P-FILE-002",
+            room_number="4",
+            column_number="5",
+            shelf_number="6",
+            created_by=self.other_data_entry,
+        )
+
+    def create_document_with_file(self, *, created_by, dossier, status_value, name):
+        relative_path = f"uploads/dossier_{dossier.id}/{name}.pdf"
+        self.write_stored_pdf(relative_path)
+        return Document.objects.create(
+            dossier=dossier,
+            doc_type=self.doc_type,
+            doc_number=f"DOC-{name.upper()}",
+            doc_name=f"Document {name}",
+            file_path=relative_path,
+            file_size_kb=120,
+            mime_type="application/pdf",
+            status=status_value,
+            created_by=created_by,
+        )
+
+    def test_data_entry_can_access_own_document_file(self):
+        document = self.create_document_with_file(
+            created_by=self.data_entry,
+            dossier=self.dossier,
+            status_value=DocumentStatus.DRAFT,
+            name="owner-access",
+        )
+
+        self.client.force_authenticate(user=self.data_entry)
+        response = self.client.get(f"/api/documents/{document.id}/file/")
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response["Content-Type"], "application/pdf")
+        first_chunk = next(response.streaming_content)
+        self.assertTrue(first_chunk.startswith(b"%PDF"))
+
+    def test_data_entry_cannot_access_other_users_document_file(self):
+        document = self.create_document_with_file(
+            created_by=self.other_data_entry,
+            dossier=self.other_dossier,
+            status_value=DocumentStatus.APPROVED,
+            name="other-owner",
+        )
+
+        self.client.force_authenticate(user=self.data_entry)
+        response = self.client.get(f"/api/documents/{document.id}/file/")
+
+        self.assertEqual(response.status_code, status.HTTP_404_NOT_FOUND)
+
+    def test_reader_can_access_only_approved_document_file(self):
+        approved_document = self.create_document_with_file(
+            created_by=self.data_entry,
+            dossier=self.dossier,
+            status_value=DocumentStatus.APPROVED,
+            name="reader-approved",
+        )
+        pending_document = self.create_document_with_file(
+            created_by=self.data_entry,
+            dossier=self.dossier,
+            status_value=DocumentStatus.PENDING,
+            name="reader-pending",
+        )
+
+        self.client.force_authenticate(user=self.reader)
+
+        approved_response = self.client.get(f"/api/documents/{approved_document.id}/file/")
+        self.assertEqual(approved_response.status_code, status.HTTP_200_OK)
+        self.assertEqual(approved_response["Content-Type"], "application/pdf")
+
+        pending_response = self.client.get(f"/api/documents/{pending_document.id}/file/")
+        self.assertEqual(pending_response.status_code, status.HTTP_404_NOT_FOUND)
+
+    def test_missing_physical_file_returns_404(self):
+        document = Document.objects.create(
+            dossier=self.dossier,
+            doc_type=self.doc_type,
+            doc_number="DOC-MISSING",
+            doc_name="Missing File",
+            file_path=f"uploads/dossier_{self.dossier.id}/missing-file.pdf",
+            file_size_kb=120,
+            mime_type="application/pdf",
+            status=DocumentStatus.DRAFT,
+            created_by=self.data_entry,
+        )
+
+        self.client.force_authenticate(user=self.admin)
+        response = self.client.get(f"/api/documents/{document.id}/file/")
+
+        self.assertEqual(response.status_code, status.HTTP_404_NOT_FOUND)
 
 
 class UserAssignedAuditorLinkageTests(APITestCase):

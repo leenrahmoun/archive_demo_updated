@@ -5,9 +5,12 @@ from rest_framework import serializers
 from rest_framework_simplejwt.tokens import RefreshToken, TokenError
 
 from core.models import AuditAction, AuditLog, Document, DocumentStatus, DocumentType, Dossier, Governorate, UserRole
+from core.services.audit_log_service import create_audit_log
 from core.services.document_storage_service import (
+    DocumentFileReplacementError,
     DocumentUploadError,
     delete_uploaded_pdf,
+    replace_document_pdf,
     store_uploaded_pdf,
     validate_uploaded_pdf,
 )
@@ -271,7 +274,7 @@ class DocumentCreateSerializer(serializers.ModelSerializer):
             delete_uploaded_pdf(stored_file_path)
             raise serializers.ValidationError({"non_field_errors": ["Failed to create document."]}) from exc
 
-        AuditLog.objects.create(
+        create_audit_log(
             user=user,
             action=AuditAction.CREATE,
             entity_type="document",
@@ -308,7 +311,7 @@ class DocumentUpdateSerializer(serializers.ModelSerializer):
             "file_path": instance.file_path,
         }
         document = super().update(instance, validated_data)
-        AuditLog.objects.create(
+        create_audit_log(
             user=user,
             action=AuditAction.UPDATE,
             entity_type="document",
@@ -321,6 +324,39 @@ class DocumentUpdateSerializer(serializers.ModelSerializer):
             },
         )
         return document
+
+
+class DocumentReplaceFileSerializer(serializers.Serializer):
+    file = serializers.FileField(write_only=True, required=True)
+
+    def validate_file(self, value):
+        try:
+            validate_uploaded_pdf(value)
+        except DocumentUploadError as exc:
+            raise serializers.ValidationError(str(exc)) from exc
+        return value
+
+    def validate(self, attrs):
+        document = self.instance
+        if document is None:
+            return attrs
+        if document.is_deleted:
+            raise serializers.ValidationError({"detail": "Soft-deleted documents cannot be modified."})
+        if document.status not in [DocumentStatus.DRAFT, DocumentStatus.REJECTED]:
+            raise serializers.ValidationError(
+                {"detail": "Document file can only be replaced when status is draft or rejected."}
+            )
+        return attrs
+
+    def save(self, **kwargs):
+        try:
+            return replace_document_pdf(
+                actor=self.context["request"].user,
+                document=self.instance,
+                uploaded_file=self.validated_data["file"],
+            )
+        except DocumentFileReplacementError as exc:
+            raise serializers.ValidationError({"detail": str(exc)}) from exc
 
 class DossierListSerializer(serializers.ModelSerializer):
     governorate_name = serializers.CharField(source="governorate.name", read_only=True)

@@ -174,6 +174,7 @@ class AuditAction(models.TextChoices):
     SUBMIT = "submit", "Submit"
     APPROVE = "approve", "Approve"
     REJECT = "reject", "Reject"
+    REPLACE_FILE = "replace_file", "Replace File"
     DELETE = "delete", "Delete"
     RESTORE = "restore", "Restore"
 

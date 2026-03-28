@@ -3,7 +3,8 @@
 from django.db import transaction
 from django.utils import timezone
 
-from core.models import AuditAction, AuditLog, Document, DocumentStatus, User, UserRole
+from core.models import AuditAction, Document, DocumentStatus, User, UserRole
+from core.services.audit_log_service import create_audit_log
 
 
 class WorkflowError(ValueError):
@@ -11,7 +12,7 @@ class WorkflowError(ValueError):
 
 
 def _audit(user: User, action: str, document: Document, old_values: dict, new_values: dict) -> None:
-    AuditLog.objects.create(
+    create_audit_log(
         user=user,
         action=action,
         entity_type="document",

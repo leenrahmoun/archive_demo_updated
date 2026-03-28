@@ -10,6 +10,20 @@ export async function getDocumentById(id) {
   return response.data;
 }
 
+export async function getDocumentPdfBlob(id) {
+  const response = await api.get(`/api/documents/${id}/file/`, {
+    responseType: "blob",
+  });
+  return response.data;
+}
+
+export async function replaceDocumentPdf(id, file) {
+  const formData = new FormData();
+  formData.append("file", file);
+  const response = await api.post(`/api/documents/${id}/replace-file/`, formData);
+  return response.data;
+}
+
 export async function submitDocument(id) {
   const response = await api.post(`/api/documents/${id}/submit/`, {});
   return response.data;
