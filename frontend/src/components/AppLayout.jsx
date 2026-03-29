@@ -10,6 +10,7 @@ export function AppLayout() {
   const { user, logout } = useAuth();
   const canCreate = CREATE_ROLES.has(user?.role);
   const canViewAudit = AUDIT_ROLES.has(user?.role);
+  const canViewAdminDashboard = ADMIN_ROLES.has(user?.role);
   const canManageUsers = ADMIN_ROLES.has(user?.role);
   const canManageDocumentTypes = ADMIN_ROLES.has(user?.role);
   const canViewReviewQueue = REVIEW_QUEUE_ROLES.has(user?.role);
@@ -19,6 +20,7 @@ export function AppLayout() {
       <aside className="sidebar">
         <h1>أرشفة الوثائق</h1>
         <nav>
+          {canViewAdminDashboard ? <NavLink to="/admin/dashboard">لوحة الإدارة</NavLink> : null}
           <NavLink to="/dossiers">الأضابير</NavLink>
           <NavLink to="/documents">الوثائق</NavLink>
           {canViewReviewQueue ? <NavLink to="/review-queue">قائمة المراجعة</NavLink> : null}
@@ -36,6 +38,7 @@ export function AppLayout() {
             <span className="muted"> - {user?.role}</span>
           </div>
           <div className="topbar-actions">
+            {canViewAdminDashboard ? <Link to="/admin/dashboard">لوحة الإدارة</Link> : null}
             <Link to="/dossiers">الرئيسية</Link>
             <Link to="/documents">الوثائق</Link>
             {canViewReviewQueue ? <Link to="/review-queue">قائمة المراجعة</Link> : null}

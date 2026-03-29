@@ -33,24 +33,66 @@ export function DocumentFormPage() {
   const [existingDoc, setExistingDoc] = useState(null);
 
   useEffect(() => {
-    getDocumentTypes().then(setDocumentTypes).catch(() => setDocumentTypes([]));
+    let isActive = true;
 
-    if (isEditMode) {
-      getDocumentById(id)
-        .then((doc) => {
-          setExistingDoc(doc);
-          setForm({
-            doc_type: doc.doc_type?.toString() || "",
-            doc_number: doc.doc_number || "",
-            doc_name: doc.doc_name || "",
-            notes: doc.notes || "",
-          });
-        })
-        .catch(() => {
-          setErrors(["تعذر تحميل تفاصيل الوثيقة."]);
-        })
-        .finally(() => setIsLoadingInitial(false));
+    async function loadDocumentTypes() {
+      try {
+        const response = await getDocumentTypes();
+        if (isActive) {
+          setDocumentTypes(Array.isArray(response) ? response : []);
+        }
+      } catch {
+        if (isActive) {
+          setDocumentTypes([]);
+        }
+      }
     }
+
+    async function loadDocument() {
+      if (!isEditMode) {
+        if (isActive) {
+          setIsLoadingInitial(false);
+        }
+        return;
+      }
+
+      try {
+        const doc = await getDocumentById(id);
+        if (!isActive) {
+          return;
+        }
+
+        setExistingDoc(doc);
+        setForm({
+          doc_type: doc.doc_type?.toString() || "",
+          doc_number: doc.doc_number || "",
+          doc_name: doc.doc_name || "",
+          notes: doc.notes || "",
+        });
+        setErrors([]);
+      } catch {
+        if (isActive) {
+          setErrors(["تعذر تحميل تفاصيل الوثيقة."]);
+        }
+      } finally {
+        if (isActive) {
+          setIsLoadingInitial(false);
+        }
+      }
+    }
+
+    async function refreshLookups() {
+      await loadDocumentTypes();
+      await loadDocument();
+    }
+
+    refreshLookups();
+    window.addEventListener("focus", refreshLookups);
+
+    return () => {
+      isActive = false;
+      window.removeEventListener("focus", refreshLookups);
+    };
   }, [id, isEditMode]);
 
   const fileSizeKb = useMemo(() => {

@@ -13,6 +13,48 @@ function normalizeArabicSearch(value) {
     .trim();
 }
 
+function cleanDocumentTypeName(value) {
+  return (value || "").replace(/\s+/g, " ").trim();
+}
+
+function buildResolvedOptions(options, value, selectedLabel) {
+  const hasSelectedOption = options.some((option) => String(option?.id) === String(value));
+  const fallbackOption =
+    value && selectedLabel && !hasSelectedOption
+      ? [{ id: value, name: selectedLabel, is_active: false, isLegacySelection: true }]
+      : [];
+
+  const uniqueOptions = [];
+  const seenIds = new Set();
+  const seenNames = new Set();
+
+  for (const option of [...fallbackOption, ...options]) {
+    const optionId = String(option?.id ?? "");
+    const optionName = cleanDocumentTypeName(option?.name);
+    const normalizedName = normalizeArabicSearch(optionName);
+
+    if (!optionId || !optionName || seenIds.has(optionId)) {
+      continue;
+    }
+    if (normalizedName && seenNames.has(normalizedName)) {
+      continue;
+    }
+
+    seenIds.add(optionId);
+    if (normalizedName) {
+      seenNames.add(normalizedName);
+    }
+
+    uniqueOptions.push({
+      ...option,
+      name: optionName,
+      is_active: option?.is_active !== false,
+    });
+  }
+
+  return uniqueOptions;
+}
+
 export function DocumentTypeAutocomplete({
   options,
   value,
@@ -21,39 +63,38 @@ export function DocumentTypeAutocomplete({
   label = "نوع الوثيقة",
   placeholder = "ابدأ بكتابة نوع الوثيقة",
   helperText = "اكتب جزءًا من الاسم العربي لعرض الأنواع المطابقة.",
+  inactiveSelectionHelperText = "النوع الحالي غير نشط، لكنه يبقى ظاهرًا هنا للحفاظ على اختيار هذه الوثيقة.",
   required = false,
 }) {
   const [query, setQuery] = useState("");
   const [isOpen, setIsOpen] = useState(false);
 
-  const selectedOption = useMemo(
-    () => options.find((option) => String(option.id) === String(value)) || null,
-    [options, value]
+  const resolvedOptions = useMemo(
+    () => buildResolvedOptions(options, value, selectedLabel),
+    [options, selectedLabel, value]
   );
-  const selectedName = selectedOption?.name || (value ? selectedLabel : "") || "";
+  const selectedOption = useMemo(
+    () => resolvedOptions.find((option) => String(option.id) === String(value)) || null,
+    [resolvedOptions, value]
+  );
+  const selectedName = selectedOption?.name || (value ? cleanDocumentTypeName(selectedLabel) : "") || "";
   const hasResolvedSelection = Boolean(selectedOption || (value && selectedLabel));
   const inputValue = isOpen ? query : selectedName || query;
-
   const normalizedQuery = useMemo(() => normalizeArabicSearch(query), [query]);
 
   const filteredOptions = useMemo(() => {
-    const seenIds = new Set();
-    const matches = [];
-
-    for (const option of options) {
-      const optionId = String(option.id);
-      if (seenIds.has(optionId)) {
-        continue;
-      }
-      seenIds.add(optionId);
-
-      if (!normalizedQuery || normalizeArabicSearch(option.name).includes(normalizedQuery)) {
-        matches.push(option);
-      }
+    if (!normalizedQuery) {
+      return resolvedOptions;
     }
 
-    return matches;
-  }, [options, normalizedQuery]);
+    return resolvedOptions.filter((option) =>
+      normalizeArabicSearch(option.name).includes(normalizedQuery)
+    );
+  }, [normalizedQuery, resolvedOptions]);
+
+  const helperMessage = selectedOption?.is_active === false
+    ? inactiveSelectionHelperText
+    : helperText;
 
   function handleInputChange(event) {
     const nextQuery = event.target.value;
@@ -92,9 +133,9 @@ export function DocumentTypeAutocomplete({
         }}
         onChange={handleInputChange}
       />
-      <small className="muted">{selectedOption?.group_name || helperText}</small>
+      <small className="muted">{helperMessage}</small>
 
-      {isOpen && normalizedQuery ? (
+      {isOpen ? (
         <div className="document-type-picker__panel">
           {filteredOptions.length ? (
             <div className="document-type-picker__list" role="listbox" aria-label={`${label} suggestions`}>
@@ -109,12 +150,20 @@ export function DocumentTypeAutocomplete({
                   onClick={() => handleOptionSelect(option)}
                 >
                   <span className="document-type-picker__option-name">{option.name}</span>
-                  <span className="document-type-picker__option-meta">{option.group_name}</span>
+                  {option.is_active === false ? (
+                    <span className="document-type-picker__option-meta">
+                      غير نشط، متاح للحفاظ على الاختيار الحالي فقط
+                    </span>
+                  ) : null}
                 </button>
               ))}
             </div>
           ) : (
-            <div className="document-type-picker__empty">لا توجد أنواع وثائق مطابقة.</div>
+            <div className="document-type-picker__empty">
+              {normalizedQuery
+                ? "لا توجد أنواع وثائق مطابقة للاسم المكتوب."
+                : "لا توجد أنواع وثائق نشطة متاحة حاليًا."}
+            </div>
           )}
         </div>
       ) : null}

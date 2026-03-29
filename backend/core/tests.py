@@ -197,7 +197,8 @@ class AuthAndLookupApiTests(APITestCase):
         response = self.client.get("/api/document-types/")
         self.assertEqual(response.status_code, status.HTTP_200_OK)
         self.assertEqual(len(response.data), 1)
-        self.assertEqual(response.data[0]["slug"], "appointment")
+        self.assertEqual(response.data[0]["name"], "قرار تعيين")
+        self.assertEqual(set(response.data[0].keys()), {"id", "name"})
 
 
 class AdminDocumentTypeManagementApiTests(APITestCase):
@@ -268,16 +269,38 @@ class AdminDocumentTypeManagementApiTests(APITestCase):
             ).exists()
         )
 
-    def test_admin_can_list_document_types(self):
-        response = self.client.get("/api/admin/document-types/?ordering=name")
+    def test_admin_can_list_document_types_with_usage_counts(self):
+        response = self.client.get("/api/admin/document-types/")
 
         self.assertEqual(response.status_code, status.HTTP_200_OK)
         self.assertIn("results", response.data)
         self.assertGreaterEqual(response.data["count"], 3)
         returned_ids = [item["id"] for item in response.data["results"]]
         self.assertIn(self.active_type.id, returned_ids)
-        self.assertIn("created_at", response.data["results"][0])
-        self.assertIn("updated_at", response.data["results"][0])
+        used_entry = next(item for item in response.data["results"] if item["id"] == self.used_type.id)
+        self.assertEqual(set(used_entry.keys()), {"id", "name", "is_active", "usage_count"})
+        self.assertEqual(used_entry["usage_count"], 1)
+
+    def test_admin_list_search_uses_normalized_arabic_name_contains(self):
+        response = self.client.get("/api/admin/document-types/?search=  نسخه  ")
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response.data["count"], 1)
+        self.assertEqual(response.data["results"][0]["id"], self.used_type.id)
+
+    def test_admin_list_can_filter_by_status(self):
+        self.used_type.is_active = False
+        self.used_type.save(update_fields=["is_active", "updated_at"])
+
+        inactive_response = self.client.get("/api/admin/document-types/?status=inactive")
+        active_response = self.client.get("/api/admin/document-types/?status=active")
+
+        self.assertEqual(inactive_response.status_code, status.HTTP_200_OK)
+        self.assertEqual({item["id"] for item in inactive_response.data["results"]}, {self.used_type.id})
+        active_ids = {item["id"] for item in active_response.data["results"]}
+        self.assertIn(self.active_type.id, active_ids)
+        self.assertIn(self.unused_type.id, active_ids)
+        self.assertNotIn(self.used_type.id, active_ids)
 
     def test_admin_rejects_duplicate_document_type_name_after_normalization(self):
         response = self.client.post(
@@ -306,6 +329,17 @@ class AdminDocumentTypeManagementApiTests(APITestCase):
                 entity_id=self.active_type.id,
             ).exists()
         )
+
+    def test_used_document_type_can_be_renamed(self):
+        response = self.client.put(
+            f"/api/admin/document-types/{self.used_type.id}/",
+            {"name": "نسخة عقد محدثة", "is_active": True},
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.used_type.refresh_from_db()
+        self.assertEqual(self.used_type.name, "نسخة عقد محدثة")
 
     def test_admin_can_delete_unused_document_type(self):
         response = self.client.delete(f"/api/admin/document-types/{self.unused_type.id}/")
@@ -358,16 +392,18 @@ class AdminDocumentTypeManagementApiTests(APITestCase):
         returned_ids = [item["id"] for item in response.data]
         self.assertIn(self.active_type.id, returned_ids)
         self.assertNotIn(self.used_type.id, returned_ids)
+        self.assertEqual(set(response.data[0].keys()), {"id", "name"})
 
     def test_old_documents_still_show_inactive_document_type_name(self):
+        self.used_type.name = "نسخة عقد محفوظة"
         self.used_type.is_active = False
-        self.used_type.save(update_fields=["is_active", "updated_at"])
+        self.used_type.save(update_fields=["name", "is_active", "updated_at"])
 
         response = self.client.get(f"/api/documents/{self.document.id}/")
 
         self.assertEqual(response.status_code, status.HTTP_200_OK)
         self.assertEqual(response.data["doc_type"], self.used_type.id)
-        self.assertEqual(response.data["doc_type_name"], "نسخة عقد")
+        self.assertEqual(response.data["doc_type_name"], "نسخة عقد محفوظة")
 
     def test_non_admin_cannot_manage_document_types(self):
         self.client.force_authenticate(user=self.reader)
@@ -377,6 +413,598 @@ class AdminDocumentTypeManagementApiTests(APITestCase):
 
         self.assertEqual(list_response.status_code, status.HTTP_403_FORBIDDEN)
         self.assertEqual(create_response.status_code, status.HTTP_403_FORBIDDEN)
+
+
+class AdminDashboardApiTests(APITestCase):
+    def setUp(self):
+        self.admin = User.objects.create_user(
+            username="dashboard_admin",
+            password="pass12345",
+            role=UserRole.ADMIN,
+            first_name="مدير",
+            last_name="النظام",
+        )
+        self.reader = User.objects.create_user(
+            username="dashboard_reader",
+            password="pass12345",
+            role=UserRole.READER,
+            is_active=False,
+        )
+        self.auditor_one = User.objects.create_user(
+            username="auditor_one",
+            password="pass12345",
+            role=UserRole.AUDITOR,
+            first_name="أحمد",
+            last_name="علي",
+        )
+        self.auditor_two = User.objects.create_user(
+            username="auditor_two",
+            password="pass12345",
+            role=UserRole.AUDITOR,
+            first_name="سارة",
+            last_name="ناصر",
+        )
+        self.data_entry_one = User.objects.create_user(
+            username="entry_one",
+            password="pass12345",
+            role=UserRole.DATA_ENTRY,
+        )
+        self.data_entry_two = User.objects.create_user(
+            username="entry_two",
+            password="pass12345",
+            role=UserRole.DATA_ENTRY,
+        )
+        self.data_entry_three = User.objects.create_user(
+            username="entry_three",
+            password="pass12345",
+            role=UserRole.DATA_ENTRY,
+        )
+        self.data_entry_one.assigned_auditor = self.auditor_one
+        self.data_entry_one.save()
+        self.data_entry_three.assigned_auditor = self.auditor_one
+        self.data_entry_three.save()
+
+        self.client.force_authenticate(user=self.admin)
+
+        self.doc_type = DocumentType.objects.create(
+            name="قرار إداري",
+            slug="dashboard-doc-type",
+            group_name="dashboard",
+            display_order=1,
+            is_active=True,
+        )
+
+        self.dossier_one = Dossier.objects.create(
+            file_number="DASH-001",
+            full_name="أضبارة أولى",
+            national_id="DASH-N-001",
+            personal_id="DASH-P-001",
+            room_number="1",
+            column_number="1",
+            shelf_number="1",
+            created_by=self.data_entry_one,
+        )
+        self.dossier_two = Dossier.objects.create(
+            file_number="DASH-002",
+            full_name="أضبارة ثانية",
+            national_id="DASH-N-002",
+            personal_id="DASH-P-002",
+            room_number="1",
+            column_number="2",
+            shelf_number="1",
+            created_by=self.data_entry_two,
+        )
+        self.dossier_three = Dossier.objects.create(
+            file_number="DASH-003",
+            full_name="أضبارة ثالثة",
+            national_id="DASH-N-003",
+            personal_id="DASH-P-003",
+            room_number="2",
+            column_number="1",
+            shelf_number="1",
+            created_by=self.data_entry_three,
+        )
+
+        now = timezone.now()
+        self.now = now
+        self.draft_document = self._create_document(
+            dossier=self.dossier_one,
+            creator=self.data_entry_one,
+            number="DASH-DR-1",
+            name="مسودة واردة",
+            status=DocumentStatus.DRAFT,
+            created_at=now - timedelta(days=2),
+        )
+        self.pending_document_older = self._create_document(
+            dossier=self.dossier_one,
+            creator=self.data_entry_one,
+            number="DASH-PN-1",
+            name="قيد المراجعة الأقدم",
+            status=DocumentStatus.PENDING,
+            created_at=now - timedelta(days=3),
+            submitted_at=now - timedelta(days=1),
+        )
+        self.pending_document_latest = self._create_document(
+            dossier=self.dossier_three,
+            creator=self.data_entry_three,
+            number="DASH-PN-2",
+            name="قيد المراجعة الأحدث",
+            status=DocumentStatus.PENDING,
+            created_at=now - timedelta(hours=8),
+            submitted_at=now - timedelta(hours=2),
+        )
+        self.rejected_document = self._create_document(
+            dossier=self.dossier_one,
+            creator=self.data_entry_one,
+            number="DASH-RJ-1",
+            name="مرفوضة بانتظار التصحيح",
+            status=DocumentStatus.REJECTED,
+            created_at=now - timedelta(days=4),
+            reviewed_by=self.auditor_one,
+            reviewed_at=now - timedelta(days=2),
+            rejection_reason="بيانات ناقصة",
+        )
+        self.approved_document_recent = self._create_document(
+            dossier=self.dossier_one,
+            creator=self.data_entry_one,
+            number="DASH-AP-1",
+            name="معتمدة حديثًا",
+            status=DocumentStatus.APPROVED,
+            created_at=now - timedelta(days=1),
+            reviewed_by=self.auditor_one,
+            reviewed_at=now - timedelta(hours=3),
+        )
+        self.approved_document_mid = self._create_document(
+            dossier=self.dossier_three,
+            creator=self.data_entry_three,
+            number="DASH-AP-2",
+            name="معتمدة قبل يومين",
+            status=DocumentStatus.APPROVED,
+            created_at=now - timedelta(days=2),
+            reviewed_by=self.auditor_one,
+            reviewed_at=now - timedelta(days=1, hours=5),
+        )
+        self.approved_document_old = self._create_document(
+            dossier=self.dossier_two,
+            creator=self.data_entry_two,
+            number="DASH-AP-3",
+            name="معتمدة قديمة",
+            status=DocumentStatus.APPROVED,
+            created_at=now - timedelta(days=10),
+            reviewed_by=self.admin,
+            reviewed_at=now - timedelta(days=9),
+        )
+        self.soft_deleted_document = self._create_document(
+            dossier=self.dossier_two,
+            creator=self.data_entry_two,
+            number="DASH-DEL-1",
+            name="محذوفة منطقيًا",
+            status=DocumentStatus.PENDING,
+            created_at=now - timedelta(hours=12),
+            submitted_at=now - timedelta(hours=10),
+            is_deleted=True,
+            deleted_at=now - timedelta(hours=9),
+            deleted_by=self.admin,
+        )
+
+        self.audit_log_oldest = self._create_audit_log(
+            action=AuditAction.CREATE,
+            entity_id=self.draft_document.id,
+            actor=self.admin,
+            created_at=now - timedelta(days=4),
+            old_values=None,
+            new_values={"doc_number": self.draft_document.doc_number, "status": DocumentStatus.DRAFT},
+        )
+        self.audit_log_middle = self._create_audit_log(
+            action=AuditAction.REJECT,
+            entity_id=self.rejected_document.id,
+            actor=self.auditor_one,
+            created_at=now - timedelta(days=2, hours=1),
+            old_values={"status": DocumentStatus.PENDING},
+            new_values={"status": DocumentStatus.REJECTED, "rejection_reason": "بيانات ناقصة"},
+        )
+        self.audit_log_latest = self._create_audit_log(
+            action=AuditAction.APPROVE,
+            entity_id=self.approved_document_recent.id,
+            actor=self.admin,
+            created_at=now - timedelta(hours=1),
+            old_values={"status": DocumentStatus.PENDING},
+            new_values={"status": DocumentStatus.APPROVED},
+        )
+        self.audit_log_submit_pending_older = self._create_audit_log(
+            action=AuditAction.SUBMIT,
+            entity_id=self.pending_document_older.id,
+            actor=self.data_entry_one,
+            created_at=now - timedelta(days=1),
+            old_values={"status": DocumentStatus.DRAFT},
+            new_values={"status": DocumentStatus.PENDING},
+        )
+        self.audit_log_submit_approved_recent = self._create_audit_log(
+            action=AuditAction.SUBMIT,
+            entity_id=self.approved_document_recent.id,
+            actor=self.data_entry_one,
+            created_at=now - timedelta(hours=20),
+            old_values={"status": DocumentStatus.DRAFT},
+            new_values={"status": DocumentStatus.PENDING},
+        )
+        self.audit_log_submit_approved_mid = self._create_audit_log(
+            action=AuditAction.SUBMIT,
+            entity_id=self.approved_document_mid.id,
+            actor=self.data_entry_three,
+            created_at=now - timedelta(days=1, hours=8),
+            old_values={"status": DocumentStatus.DRAFT},
+            new_values={"status": DocumentStatus.PENDING},
+        )
+        self.audit_log_submit_pending_latest = self._create_audit_log(
+            action=AuditAction.SUBMIT,
+            entity_id=self.pending_document_latest.id,
+            actor=self.data_entry_three,
+            created_at=now - timedelta(hours=2),
+            old_values={"status": DocumentStatus.DRAFT},
+            new_values={"status": DocumentStatus.PENDING},
+        )
+        self.audit_log_approve_mid = self._create_audit_log(
+            action=AuditAction.APPROVE,
+            entity_id=self.approved_document_mid.id,
+            actor=self.auditor_one,
+            created_at=now - timedelta(days=1, hours=5),
+            old_values={"status": DocumentStatus.PENDING},
+            new_values={"status": DocumentStatus.APPROVED},
+        )
+        self.audit_log_approve_recent_auditor = self._create_audit_log(
+            action=AuditAction.APPROVE,
+            entity_id=self.approved_document_recent.id,
+            actor=self.auditor_one,
+            created_at=now - timedelta(hours=3),
+            old_values={"status": DocumentStatus.PENDING},
+            new_values={"status": DocumentStatus.APPROVED},
+        )
+        self.audit_log_admin_reject = self._create_audit_log(
+            action=AuditAction.REJECT,
+            entity_id=self.rejected_document.id,
+            actor=self.admin,
+            created_at=now - timedelta(hours=4),
+            old_values={"status": DocumentStatus.PENDING},
+            new_values={"status": DocumentStatus.REJECTED, "rejection_reason": "Ù…Ø±Ø§Ø¬Ø¹Ø© Ø¥Ø¯Ø§Ø±ÙŠØ©"},
+        )
+
+    def _create_document(
+        self,
+        *,
+        dossier,
+        creator,
+        number,
+        name,
+        status,
+        created_at,
+        submitted_at=None,
+        reviewed_by=None,
+        reviewed_at=None,
+        rejection_reason=None,
+        is_deleted=False,
+        deleted_at=None,
+        deleted_by=None,
+    ):
+        document = Document.objects.create(
+            dossier=dossier,
+            doc_type=self.doc_type,
+            doc_number=number,
+            doc_name=name,
+            file_path=f"archive/dashboard/{number}.pdf",
+            file_size_kb=120,
+            mime_type="application/pdf",
+            status=status,
+            created_by=creator,
+            reviewed_by=reviewed_by,
+            rejection_reason=rejection_reason,
+            is_deleted=is_deleted,
+            deleted_at=deleted_at,
+            deleted_by=deleted_by,
+        )
+        Document.objects.filter(pk=document.pk).update(
+            created_at=created_at,
+            updated_at=created_at,
+            submitted_at=submitted_at,
+            reviewed_at=reviewed_at,
+            deleted_at=deleted_at,
+        )
+        document.refresh_from_db()
+        return document
+
+    def _create_audit_log(self, *, action, entity_id, actor, created_at, old_values, new_values):
+        audit_log = AuditLog.objects.create(
+            user=actor,
+            action=action,
+            entity_type="document",
+            entity_id=entity_id,
+            old_values=old_values,
+            new_values=new_values,
+        )
+        AuditLog.objects.filter(pk=audit_log.pk).update(created_at=created_at)
+        audit_log.refresh_from_db()
+        return audit_log
+
+    def test_admin_can_access_dashboard(self):
+        response = self.client.get("/api/admin/dashboard/")
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertIn("summary", response.data)
+        self.assertIn("workflow", response.data)
+        self.assertIn("user_activity", response.data)
+        self.assertIn("employee_tracking", response.data)
+        self.assertIn("charts", response.data)
+        self.assertIn("recent_activity", response.data)
+
+    def test_non_admin_cannot_access_dashboard(self):
+        self.client.force_authenticate(user=self.data_entry_one)
+
+        response = self.client.get("/api/admin/dashboard/")
+
+        self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
+
+    def test_dashboard_counts_and_payload_structure_are_correct(self):
+        response = self.client.get("/api/admin/dashboard/")
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(
+            response.data["summary"],
+            {
+                "total_active_documents": 7,
+                "draft_documents": 1,
+                "pending_documents": 2,
+                "rejected_documents": 1,
+                "approved_documents": 3,
+                "total_dossiers": 3,
+                "soft_deleted_documents": 1,
+                "total_active_users": 6,
+            },
+        )
+        self.assertEqual(
+            response.data["workflow"],
+            {
+                "pending_review_documents": 2,
+                "rejected_waiting_correction_documents": 1,
+                "approved_documents": 3,
+                "recently_created_documents": 6,
+                "recent_window_days": 7,
+            },
+        )
+        self.assertEqual(
+            response.data["user_activity"],
+            {
+                "total_data_entry_users": 3,
+                "total_auditors": 2,
+                "total_readers": 1,
+                "total_active_users": 6,
+                "data_entry_users_without_assigned_auditor": 1,
+                "auditors_with_zero_assigned_data_entry_users": 1,
+            },
+        )
+        self.assertEqual(
+            set(response.data["employee_tracking"].keys()),
+            {"data_entry_performance", "auditor_performance", "admin_review_activity"},
+        )
+        self.assertEqual(
+            set(response.data["charts"].keys()),
+            {
+                "documents_by_status",
+                "documents_created_over_time",
+                "approvals_rejections_over_time",
+                "top_data_entry_by_created_documents",
+                "top_data_entry_by_review_backlog",
+                "top_auditors_by_review_workload",
+            },
+        )
+        self.assertEqual(
+            set(response.data["recent_activity"].keys()),
+            {
+                "latest_pending_documents",
+                "latest_rejected_documents",
+                "latest_approved_documents",
+                "latest_audit_log_events",
+            },
+        )
+
+    def test_dashboard_data_entry_productivity_counts_are_correct(self):
+        response = self.client.get("/api/admin/dashboard/")
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        performance_by_username = {
+            item["username"]: item for item in response.data["employee_tracking"]["data_entry_performance"]
+        }
+        self.assertEqual(performance_by_username["entry_one"]["documents_created_count"], 4)
+        self.assertEqual(performance_by_username["entry_one"]["dossiers_created_count"], 1)
+        self.assertEqual(performance_by_username["entry_one"]["draft_documents_count"], 1)
+        self.assertEqual(performance_by_username["entry_one"]["pending_documents_count"], 1)
+        self.assertEqual(performance_by_username["entry_one"]["rejected_documents_count"], 1)
+        self.assertEqual(performance_by_username["entry_one"]["approved_documents_count"], 1)
+        self.assertEqual(performance_by_username["entry_one"]["submissions_count"], 2)
+        self.assertEqual(performance_by_username["entry_two"]["documents_created_count"], 2)
+        self.assertEqual(performance_by_username["entry_two"]["approved_documents_count"], 1)
+        self.assertEqual(performance_by_username["entry_two"]["submissions_count"], 0)
+        self.assertIsNone(performance_by_username["entry_two"]["assigned_auditor_name"])
+        self.assertEqual(performance_by_username["entry_three"]["documents_created_count"], 2)
+        self.assertEqual(performance_by_username["entry_three"]["pending_documents_count"], 1)
+        self.assertEqual(performance_by_username["entry_three"]["approved_documents_count"], 1)
+        self.assertEqual(performance_by_username["entry_three"]["submissions_count"], 2)
+        self.assertIsNotNone(performance_by_username["entry_one"]["last_activity_at"])
+
+    def test_dashboard_auditor_productivity_counts_are_correct(self):
+        response = self.client.get("/api/admin/dashboard/")
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        performance_by_username = {
+            item["username"]: item for item in response.data["employee_tracking"]["auditor_performance"]
+        }
+
+        self.assertEqual(performance_by_username["auditor_one"]["assigned_data_entry_count"], 2)
+        self.assertEqual(performance_by_username["auditor_one"]["pending_documents_in_scope"], 2)
+        self.assertEqual(performance_by_username["auditor_one"]["rejected_documents_in_scope"], 1)
+        self.assertEqual(performance_by_username["auditor_one"]["reviewed_documents_count"], 3)
+        self.assertEqual(performance_by_username["auditor_one"]["approved_by_auditor_count"], 2)
+        self.assertEqual(performance_by_username["auditor_one"]["rejected_by_auditor_count"], 1)
+        self.assertIsNotNone(performance_by_username["auditor_one"]["last_activity_at"])
+        self.assertEqual(performance_by_username["auditor_two"]["assigned_data_entry_count"], 0)
+        self.assertEqual(performance_by_username["auditor_two"]["pending_documents_in_scope"], 0)
+        self.assertEqual(performance_by_username["auditor_two"]["rejected_documents_in_scope"], 0)
+        self.assertEqual(performance_by_username["auditor_two"]["reviewed_documents_count"], 0)
+        self.assertIsNone(performance_by_username["auditor_two"]["last_activity_at"])
+
+    def test_dashboard_admin_review_metrics_are_correct(self):
+        response = self.client.get("/api/admin/dashboard/")
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        admin_review_activity = response.data["employee_tracking"]["admin_review_activity"]
+        self.assertEqual(admin_review_activity["approved_by_admin_count"], 1)
+        self.assertEqual(admin_review_activity["rejected_by_admin_count"], 1)
+        self.assertIsNotNone(admin_review_activity["latest_admin_review_at"])
+
+    def test_dashboard_chart_data_is_correct(self):
+        response = self.client.get("/api/admin/dashboard/")
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+
+        status_chart = response.data["charts"]["documents_by_status"]
+        self.assertEqual(status_chart["chart_type"], "donut")
+        self.assertEqual(status_chart["total"], 7)
+        self.assertEqual(
+            {item["key"]: item["value"] for item in status_chart["items"]},
+            {"draft": 1, "pending": 2, "rejected": 1, "approved": 3},
+        )
+
+        created_over_time = {
+            item["date"]: item["value"] for item in response.data["charts"]["documents_created_over_time"]["items"]
+        }
+        chart_start_date = (self.now - timedelta(days=6)).date()
+        expected_created_counts = {}
+        for document in [
+            self.draft_document,
+            self.pending_document_older,
+            self.pending_document_latest,
+            self.rejected_document,
+            self.approved_document_recent,
+            self.approved_document_mid,
+        ]:
+            if document.created_at.date() < chart_start_date:
+                continue
+            key = document.created_at.date().isoformat()
+            expected_created_counts[key] = expected_created_counts.get(key, 0) + 1
+        for date_key, count in expected_created_counts.items():
+            self.assertEqual(created_over_time[date_key], count)
+
+        review_over_time = {
+            item["date"]: item for item in response.data["charts"]["approvals_rejections_over_time"]["items"]
+        }
+        expected_approvals = {}
+        expected_rejections = {}
+        for audit_log in [
+            self.audit_log_latest,
+            self.audit_log_approve_recent_auditor,
+            self.audit_log_approve_mid,
+        ]:
+            key = audit_log.created_at.date().isoformat()
+            expected_approvals[key] = expected_approvals.get(key, 0) + 1
+        for audit_log in [
+            self.audit_log_middle,
+            self.audit_log_admin_reject,
+        ]:
+            key = audit_log.created_at.date().isoformat()
+            expected_rejections[key] = expected_rejections.get(key, 0) + 1
+        for date_key, count in expected_approvals.items():
+            self.assertEqual(review_over_time[date_key]["approved_value"], count)
+        for date_key, count in expected_rejections.items():
+            self.assertEqual(review_over_time[date_key]["rejected_value"], count)
+
+        self.assertEqual(
+            response.data["charts"]["top_data_entry_by_created_documents"]["items"][0]["username"],
+            "entry_one",
+        )
+        self.assertEqual(
+            response.data["charts"]["top_data_entry_by_created_documents"]["items"][0]["documents_created_count"],
+            4,
+        )
+        self.assertEqual(
+            response.data["charts"]["top_auditors_by_review_workload"]["items"][0]["username"],
+            "auditor_one",
+        )
+        self.assertEqual(
+            response.data["charts"]["top_auditors_by_review_workload"]["items"][0]["pending_documents_in_scope"],
+            2,
+        )
+
+    def test_dashboard_recent_lists_return_expected_scoped_data(self):
+        response = self.client.get("/api/admin/dashboard/")
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+
+        pending_ids = [item["id"] for item in response.data["recent_activity"]["latest_pending_documents"]]
+        rejected_ids = [item["id"] for item in response.data["recent_activity"]["latest_rejected_documents"]]
+        approved_ids = [item["id"] for item in response.data["recent_activity"]["latest_approved_documents"]]
+        audit_event_ids = [item["id"] for item in response.data["recent_activity"]["latest_audit_log_events"]]
+
+        self.assertEqual(pending_ids, [self.pending_document_latest.id, self.pending_document_older.id])
+        self.assertEqual(rejected_ids, [self.rejected_document.id])
+        self.assertEqual(
+            approved_ids,
+            [
+                self.approved_document_recent.id,
+                self.approved_document_mid.id,
+                self.approved_document_old.id,
+            ],
+        )
+        self.assertEqual(
+            audit_event_ids,
+            [
+                self.audit_log_latest.id,
+                self.audit_log_submit_pending_latest.id,
+                self.audit_log_approve_recent_auditor.id,
+                self.audit_log_admin_reject.id,
+                self.audit_log_submit_approved_recent.id,
+            ],
+        )
+        self.assertNotIn(self.soft_deleted_document.id, pending_ids)
+
+
+class AdminDashboardEmptyStateApiTests(APITestCase):
+    def setUp(self):
+        self.admin = User.objects.create_user(
+            username="empty_dashboard_admin",
+            password="pass12345",
+            role=UserRole.ADMIN,
+        )
+        self.client.force_authenticate(user=self.admin)
+
+    def test_dashboard_handles_empty_state_without_users_documents_or_activity(self):
+        response = self.client.get("/api/admin/dashboard/")
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(
+            response.data["summary"],
+            {
+                "total_active_documents": 0,
+                "draft_documents": 0,
+                "pending_documents": 0,
+                "rejected_documents": 0,
+                "approved_documents": 0,
+                "total_dossiers": 0,
+                "soft_deleted_documents": 0,
+                "total_active_users": 1,
+            },
+        )
+        self.assertEqual(response.data["employee_tracking"]["data_entry_performance"], [])
+        self.assertEqual(response.data["employee_tracking"]["auditor_performance"], [])
+        self.assertEqual(
+            response.data["employee_tracking"]["admin_review_activity"],
+            {
+                "approved_by_admin_count": 0,
+                "rejected_by_admin_count": 0,
+                "latest_admin_review_at": None,
+            },
+        )
+        self.assertEqual(response.data["recent_activity"]["latest_pending_documents"], [])
+        self.assertEqual(response.data["recent_activity"]["latest_rejected_documents"], [])
+        self.assertEqual(response.data["recent_activity"]["latest_approved_documents"], [])
+        self.assertEqual(response.data["recent_activity"]["latest_audit_log_events"], [])
 
 
 class DocumentWorkflowApiTests(APITestCase):
@@ -2208,6 +2836,7 @@ class SeededDocumentTypeLookupApiTests(APITestCase):
         custom_entry = next((item for item in response.data if item["id"] == custom_type.id), None)
         self.assertIsNotNone(custom_entry)
         self.assertEqual(custom_entry["name"], "اسم من قاعدة البيانات")
+        self.assertEqual(set(custom_entry.keys()), {"id", "name"})
 
 
 class DossierDetailDocumentVisibilityTests(APITestCase):

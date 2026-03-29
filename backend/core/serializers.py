@@ -167,12 +167,11 @@ class GovernorateLookupSerializer(serializers.ModelSerializer):
 class DocumentTypeLookupSerializer(serializers.ModelSerializer):
     class Meta:
         model = DocumentType
-        fields = ("id", "name", "slug", "group_name", "display_order")
+        fields = ("id", "name")
 
 
 class DocumentTypeManagementSerializer(serializers.ModelSerializer):
-    documents_count = serializers.SerializerMethodField()
-    is_used = serializers.SerializerMethodField()
+    usage_count = serializers.SerializerMethodField()
     name = serializers.CharField(
         max_length=100,
         error_messages={
@@ -187,21 +186,15 @@ class DocumentTypeManagementSerializer(serializers.ModelSerializer):
             "id",
             "name",
             "is_active",
-            "created_at",
-            "updated_at",
-            "documents_count",
-            "is_used",
+            "usage_count",
         )
-        read_only_fields = ("created_at", "updated_at", "documents_count", "is_used")
+        read_only_fields = ("usage_count",)
 
-    def get_documents_count(self, obj):
-        annotated_count = getattr(obj, "documents_count", None)
+    def get_usage_count(self, obj):
+        annotated_count = getattr(obj, "usage_count", None)
         if annotated_count is not None:
             return annotated_count
         return obj.documents.count()
-
-    def get_is_used(self, obj):
-        return self.get_documents_count(obj) > 0
 
     def validate_name(self, value):
         cleaned_name = clean_document_type_name(value)
@@ -593,6 +586,102 @@ class DocumentSummarySerializer(serializers.ModelSerializer):
         if self.get_is_rejected_by_admin(obj):
             return "مرفوضة من المدير"
         return DOCUMENT_STATUS_LABELS.get(obj.status, obj.status)
+
+
+class AdminDashboardRecentDocumentSerializer(serializers.ModelSerializer):
+    dossier_name = serializers.CharField(source="dossier.file_number", read_only=True)
+    doc_type_name = serializers.CharField(source="doc_type.name", read_only=True)
+    created_by_name = serializers.SerializerMethodField()
+    reviewed_by_name = serializers.SerializerMethodField()
+    status_label = serializers.SerializerMethodField()
+
+    class Meta:
+        model = Document
+        fields = (
+            "id",
+            "doc_number",
+            "doc_name",
+            "dossier_name",
+            "doc_type_name",
+            "status",
+            "status_label",
+            "created_by_name",
+            "reviewed_by_name",
+            "created_at",
+            "submitted_at",
+            "reviewed_at",
+            "rejection_reason",
+        )
+
+    def get_created_by_name(self, obj):
+        return get_user_display_name(obj.created_by)
+
+    def get_reviewed_by_name(self, obj):
+        if not obj.reviewed_by:
+            return None
+        return get_user_display_name(obj.reviewed_by)
+
+    def get_status_label(self, obj):
+        if obj.status == DocumentStatus.APPROVED and obj.reviewed_by and obj.reviewed_by.role == UserRole.ADMIN:
+            return "معتمدة من المدير"
+        if obj.status == DocumentStatus.REJECTED and obj.reviewed_by and obj.reviewed_by.role == UserRole.ADMIN:
+            return "مرفوضة من المدير"
+        return DOCUMENT_STATUS_LABELS.get(obj.status, obj.status)
+
+
+class AdminDashboardAuditEventSerializer(AuditLogSerializer):
+    actor_name = serializers.SerializerMethodField()
+
+    class Meta(AuditLogSerializer.Meta):
+        fields = (
+            "id",
+            "action_label",
+            "entity_label",
+            "entity_display",
+            "change_summary",
+            "created_at",
+            "actor_name",
+        )
+
+    def get_actor_name(self, obj):
+        annotated_name = getattr(obj, "actor_display_name_value", None)
+        if annotated_name:
+            return annotated_name
+        return get_user_display_name(obj.user)
+
+
+class AdminDashboardDataEntryPerformanceSerializer(serializers.Serializer):
+    user_id = serializers.IntegerField()
+    username = serializers.CharField()
+    display_name = serializers.CharField()
+    assigned_auditor_name = serializers.CharField(allow_null=True)
+    dossiers_created_count = serializers.IntegerField()
+    documents_created_count = serializers.IntegerField()
+    draft_documents_count = serializers.IntegerField()
+    pending_documents_count = serializers.IntegerField()
+    rejected_documents_count = serializers.IntegerField()
+    approved_documents_count = serializers.IntegerField()
+    submissions_count = serializers.IntegerField()
+    last_activity_at = serializers.DateTimeField(allow_null=True)
+
+
+class AdminDashboardAuditorPerformanceSerializer(serializers.Serializer):
+    user_id = serializers.IntegerField()
+    username = serializers.CharField()
+    display_name = serializers.CharField()
+    assigned_data_entry_count = serializers.IntegerField()
+    pending_documents_in_scope = serializers.IntegerField()
+    rejected_documents_in_scope = serializers.IntegerField()
+    reviewed_documents_count = serializers.IntegerField()
+    approved_by_auditor_count = serializers.IntegerField()
+    rejected_by_auditor_count = serializers.IntegerField()
+    last_activity_at = serializers.DateTimeField(allow_null=True)
+
+
+class AdminDashboardAdminReviewActivitySerializer(serializers.Serializer):
+    approved_by_admin_count = serializers.IntegerField()
+    rejected_by_admin_count = serializers.IntegerField()
+    latest_admin_review_at = serializers.DateTimeField(allow_null=True)
 
 
 class DocumentCreateSerializer(serializers.ModelSerializer):

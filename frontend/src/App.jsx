@@ -2,6 +2,7 @@ import { Navigate, Route, Routes } from "react-router-dom";
 import { useAuth } from "./auth/useAuth";
 import { AppLayout } from "./components/AppLayout";
 import { ProtectedRoute } from "./components/ProtectedRoute";
+import { LoadingBlock } from "./components/StateBlock";
 import { LoginPage } from "./pages/LoginPage";
 import { DossierListPage } from "./pages/DossierListPage";
 import { DossierDetailPage } from "./pages/DossierDetailPage";
@@ -16,10 +17,20 @@ import { NotFoundPage } from "./pages/NotFoundPage";
 import { UserManagementPage } from "./pages/UserManagementPage";
 import { ReviewQueuePage } from "./pages/ReviewQueuePage";
 import { DocumentTypesManagementPage } from "./pages/DocumentTypesManagementPage";
+import { AdminDashboardPage } from "./pages/AdminDashboardPage";
 
 function HomeRedirect() {
-  const { isAuthenticated } = useAuth();
-  return <Navigate to={isAuthenticated ? "/dossiers" : "/login"} replace />;
+  const { user, isAuthenticated, isLoading } = useAuth();
+
+  if (isLoading) {
+    return <LoadingBlock />;
+  }
+
+  if (!isAuthenticated) {
+    return <Navigate to="/login" replace />;
+  }
+
+  return <Navigate to={user?.role === "admin" ? "/admin/dashboard" : "/dossiers"} replace />;
 }
 
 export default function App() {
@@ -60,6 +71,14 @@ export default function App() {
           element={
             <RoleGuard allowedRoles={["admin", "data_entry"]}>
               <DocumentFormPage />
+            </RoleGuard>
+          }
+        />
+        <Route
+          path="/admin/dashboard"
+          element={
+            <RoleGuard allowedRoles={["admin"]}>
+              <AdminDashboardPage />
             </RoleGuard>
           }
         />

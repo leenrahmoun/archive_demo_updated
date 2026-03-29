@@ -35,8 +35,29 @@ export function CreateDossierPage() {
   const [isSubmitting, setIsSubmitting] = useState(false);
 
   useEffect(() => {
+    let isActive = true;
+
+    async function loadDocumentTypes() {
+      try {
+        const response = await getDocumentTypes();
+        if (isActive) {
+          setDocumentTypes(Array.isArray(response) ? response : []);
+        }
+      } catch {
+        if (isActive) {
+          setDocumentTypes([]);
+        }
+      }
+    }
+
     getGovernorates().then(setGovernorates).catch(() => setGovernorates([]));
-    getDocumentTypes().then(setDocumentTypes).catch(() => setDocumentTypes([]));
+    loadDocumentTypes();
+    window.addEventListener("focus", loadDocumentTypes);
+
+    return () => {
+      isActive = false;
+      window.removeEventListener("focus", loadDocumentTypes);
+    };
   }, []);
 
   const fileSizeKb = useMemo(() => {

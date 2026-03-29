@@ -12,10 +12,19 @@ import { PageHeader } from "../components/PageHeader";
 import { PaginationControls } from "../components/PaginationControls";
 import { EmptyBlock, LoadingBlock } from "../components/StateBlock";
 
+const DEFAULT_PAGE_SIZE = 20;
+
 function createEmptyForm() {
   return {
     name: "",
     is_active: true,
+  };
+}
+
+function createDefaultFilters() {
+  return {
+    search: "",
+    status: "all",
   };
 }
 
@@ -58,17 +67,72 @@ function getApiErrorMessage(error, fallbackMessage) {
   return fallbackMessage;
 }
 
-function formatDateTime(value) {
-  if (!value) {
-    return "غير متوفر";
+function formatUsageLabel(usageCount) {
+  if (!usageCount) {
+    return "غير مستخدم بعد";
   }
 
-  const date = new Date(value);
-  if (Number.isNaN(date.getTime())) {
-    return value;
+  return `عدد الوثائق المرتبطة: ${usageCount}`;
+}
+
+function getCreateSuccessMessage(isActive) {
+  if (isActive) {
+    return "تمت إضافة نوع الوثيقة بنجاح، وسيظهر فورًا في القوائم العامة والنماذج الجديدة.";
   }
 
-  return date.toLocaleString("ar");
+  return "تمت إضافة نوع الوثيقة كنوع غير نشط. لن يظهر في القوائم العامة حتى يتم تفعيله.";
+}
+
+function getUpdateSuccessMessage(previousType, nextValues) {
+  const nameChanged = nextValues.name !== previousType.name;
+  const deactivated = previousType.is_active && !nextValues.is_active;
+  const activated = !previousType.is_active && nextValues.is_active;
+
+  if (nameChanged && deactivated) {
+    return "تم تحديث اسم نوع الوثيقة وتعطيله. سيبقى الاسم ظاهرًا في الوثائق المرتبطة به.";
+  }
+
+  if (nameChanged && activated) {
+    return "تم تحديث اسم نوع الوثيقة وإعادة تفعيله بنجاح.";
+  }
+
+  if (deactivated) {
+    return "تم تعطيل نوع الوثيقة. لن يظهر بعد الآن في القوائم العامة أو النماذج الجديدة.";
+  }
+
+  if (activated) {
+    return "تمت إعادة تفعيل نوع الوثيقة، وسيظهر مجددًا في القوائم العامة والنماذج الجديدة.";
+  }
+
+  if (nameChanged) {
+    return "تم تحديث اسم نوع الوثيقة بنجاح.";
+  }
+
+  return "تم حفظ نوع الوثيقة بنجاح.";
+}
+
+function getDeactivateConfirmationMessage(documentType) {
+  const usageNote = documentType.usage_count
+    ? `سيختفي هذا النوع من القوائم العامة والنماذج الجديدة، لكن اسمه سيبقى ظاهرًا داخل ${documentType.usage_count} وثيقة مرتبطة به.`
+    : "سيختفي هذا النوع من القوائم العامة والنماذج الجديدة، ويمكنك إعادة تفعيله لاحقًا عند الحاجة.";
+
+  return `هل تريد تعطيل النوع «${documentType.name}»؟ ${usageNote}`;
+}
+
+function getReactivateConfirmationMessage(documentType) {
+  return `هل تريد إعادة تفعيل النوع «${documentType.name}»؟ سيظهر مرة أخرى في القوائم العامة والنماذج الجديدة.`;
+}
+
+function getDeleteConfirmationMessage(documentType) {
+  return `هل تريد حذف النوع «${documentType.name}» نهائيًا؟ هذا الإجراء مخصص للأنواع غير المستخدمة فقط، ولن يمكن التراجع عنه من هذه الشاشة.`;
+}
+
+function getEmptyStateMessage(filters) {
+  if (filters.search || filters.status !== "all") {
+    return "لا توجد أنواع وثائق تطابق الاسم العربي أو الحالة المحددة. جرّب تعديل البحث أو إعادة الضبط.";
+  }
+
+  return "لا توجد أنواع وثائق حتى الآن. أضف أول نوع ليظهر في القوائم العامة والنماذج الجديدة.";
 }
 
 function DocumentTypeEditorForm({
@@ -98,7 +162,7 @@ function DocumentTypeEditorForm({
             autoComplete="off"
             required
           />
-          <small className="muted">سيظهر هذا الاسم مباشرة في قوائم اختيار نوع الوثيقة للمستخدمين.</small>
+          <small className="muted">سيظهر هذا الاسم مباشرة في القوائم العامة ونماذج اختيار نوع الوثيقة.</small>
         </label>
 
         <label className="form-field form-field--checkbox">
@@ -143,14 +207,12 @@ export function DocumentTypesManagementPage() {
   const [createForm, setCreateForm] = useState(createEmptyForm());
   const [editingType, setEditingType] = useState(null);
   const [editForm, setEditForm] = useState(createEmptyForm());
-  const [searchInput, setSearchInput] = useState("");
-  const [searchQuery, setSearchQuery] = useState("");
-  const [statusFilter, setStatusFilter] = useState("all");
+  const [draftFilters, setDraftFilters] = useState(createDefaultFilters());
+  const [appliedFilters, setAppliedFilters] = useState(createDefaultFilters());
   const [page, setPage] = useState(1);
   const [count, setCount] = useState(0);
   const [hasNextPage, setHasNextPage] = useState(false);
   const [hasPreviousPage, setHasPreviousPage] = useState(false);
-  const [pageSizeHint, setPageSizeHint] = useState(1);
 
   const loadDocumentTypes = useCallback(async (targetPage, showLoadingState = false) => {
     if (showLoadingState) {
@@ -158,30 +220,21 @@ export function DocumentTypesManagementPage() {
     }
 
     try {
-      const params = {
-        page: targetPage,
-        ordering: "name",
-      };
+      const params = { page: targetPage };
 
-      if (searchQuery.trim()) {
-        params.search = searchQuery.trim();
+      if (appliedFilters.search) {
+        params.search = appliedFilters.search;
       }
 
-      if (statusFilter === "active") {
-        params.is_active = true;
-      } else if (statusFilter === "inactive") {
-        params.is_active = false;
+      if (appliedFilters.status !== "all") {
+        params.status = appliedFilters.status;
       }
 
       const response = await getManagedDocumentTypes(params);
-      const currentResults = response.results || [];
       setDocumentTypes(response.results || []);
       setCount(response.count || 0);
       setHasNextPage(Boolean(response.next));
       setHasPreviousPage(Boolean(response.previous));
-      if (currentResults.length) {
-        setPageSizeHint((current) => Math.max(current, currentResults.length));
-      }
       setPageError("");
       return response;
     } catch (error) {
@@ -192,7 +245,7 @@ export function DocumentTypesManagementPage() {
         setIsLoading(false);
       }
     }
-  }, [searchQuery, statusFilter]);
+  }, [appliedFilters]);
 
   useEffect(() => {
     if (!user || user.role !== "admin") {
@@ -216,6 +269,8 @@ export function DocumentTypesManagementPage() {
 
   async function handleCreateSubmit(event) {
     event.preventDefault();
+    const nextName = createForm.name.trim();
+
     setCreateError("");
     setPageError("");
     setSuccessMessage("");
@@ -223,13 +278,13 @@ export function DocumentTypesManagementPage() {
 
     try {
       await createManagedDocumentType({
-        name: createForm.name.trim(),
+        name: nextName,
         is_active: createForm.is_active,
       });
       setCreateForm(createEmptyForm());
       setPage(1);
       await loadDocumentTypes(1, false);
-      setSuccessMessage("تمت إضافة نوع الوثيقة بنجاح.");
+      setSuccessMessage(getCreateSuccessMessage(createForm.is_active));
     } catch (error) {
       setCreateError(getApiErrorMessage(error, "تعذر إضافة نوع الوثيقة."));
     } finally {
@@ -256,19 +311,28 @@ export function DocumentTypesManagementPage() {
       return;
     }
 
+    const nextValues = {
+      name: editForm.name.trim(),
+      is_active: editForm.is_active,
+    };
+
+    if (editingType.is_active && !nextValues.is_active) {
+      const confirmed = window.confirm(getDeactivateConfirmationMessage(editingType));
+      if (!confirmed) {
+        return;
+      }
+    }
+
     setEditError("");
     setPageError("");
     setSuccessMessage("");
     setIsEditSubmitting(true);
 
     try {
-      await updateManagedDocumentType(editingType.id, {
-        name: editForm.name.trim(),
-        is_active: editForm.is_active,
-      });
+      await updateManagedDocumentType(editingType.id, nextValues);
       await loadDocumentTypes(page, false);
       handleCloseEdit();
-      setSuccessMessage("تم تحديث نوع الوثيقة بنجاح.");
+      setSuccessMessage(getUpdateSuccessMessage(editingType, nextValues));
     } catch (error) {
       setEditError(getApiErrorMessage(error, "تعذر تحديث نوع الوثيقة."));
     } finally {
@@ -280,8 +344,8 @@ export function DocumentTypesManagementPage() {
     const nextIsActive = !documentType.is_active;
     const confirmed = window.confirm(
       nextIsActive
-        ? `هل تريد إعادة تفعيل النوع ${documentType.name}؟`
-        : `هل تريد تعطيل النوع ${documentType.name}؟`
+        ? getReactivateConfirmationMessage(documentType)
+        : getDeactivateConfirmationMessage(documentType)
     );
     if (!confirmed) {
       return;
@@ -293,12 +357,16 @@ export function DocumentTypesManagementPage() {
     try {
       await setManagedDocumentTypeActiveState(documentType.id, nextIsActive);
       await loadDocumentTypes(page, false);
-      setSuccessMessage(nextIsActive ? "تم تفعيل نوع الوثيقة." : "تم تعطيل نوع الوثيقة.");
+      setSuccessMessage(
+        nextIsActive
+          ? "تمت إعادة تفعيل نوع الوثيقة، وسيظهر مجددًا في القوائم العامة والنماذج الجديدة."
+          : "تم تعطيل نوع الوثيقة. سيبقى اسمه ظاهرًا في الوثائق المرتبطة به فقط."
+      );
     } catch (error) {
       setPageError(
         getApiErrorMessage(
           error,
-          nextIsActive ? "تعذر تفعيل نوع الوثيقة." : "تعذر تعطيل نوع الوثيقة."
+          nextIsActive ? "تعذر إعادة تفعيل نوع الوثيقة." : "تعذر تعطيل نوع الوثيقة."
         )
       );
     } finally {
@@ -307,7 +375,7 @@ export function DocumentTypesManagementPage() {
   }
 
   async function handleDelete(documentType) {
-    const confirmed = window.confirm(`هل تريد حذف النوع ${documentType.name} نهائيًا؟`);
+    const confirmed = window.confirm(getDeleteConfirmationMessage(documentType));
     if (!confirmed) {
       return;
     }
@@ -323,7 +391,7 @@ export function DocumentTypesManagementPage() {
       if (targetPage !== page) {
         setPage(targetPage);
       }
-      setSuccessMessage("تم حذف نوع الوثيقة بنجاح.");
+      setSuccessMessage("تم حذف نوع الوثيقة نهائيًا لأنه غير مستخدم في أي وثيقة.");
     } catch (error) {
       setPageError(getApiErrorMessage(error, "تعذر حذف نوع الوثيقة."));
     } finally {
@@ -331,13 +399,23 @@ export function DocumentTypesManagementPage() {
     }
   }
 
-  function handleSearchSubmit(event) {
+  function handleFiltersSubmit(event) {
     event.preventDefault();
     setPage(1);
-    setSearchQuery(searchInput);
+    setAppliedFilters({
+      search: draftFilters.search.trim(),
+      status: draftFilters.status,
+    });
   }
 
-  const totalPages = Math.max(1, Math.ceil(count / pageSizeHint));
+  function handleResetFilters() {
+    const nextFilters = createDefaultFilters();
+    setDraftFilters(nextFilters);
+    setAppliedFilters(nextFilters);
+    setPage(1);
+  }
+
+  const totalPages = Math.max(1, Math.ceil(count / DEFAULT_PAGE_SIZE));
 
   if (user?.role !== "admin") {
     return (
@@ -354,7 +432,7 @@ export function DocumentTypesManagementPage() {
     <section>
       <PageHeader
         title="إدارة أنواع الوثائق"
-        subtitle="إضافة الأنواع الجديدة، تعديل الأسماء، وتعطيل الأنواع المستخدمة من لوحة إدارة واحدة."
+        subtitle="تعديل الأسماء، تعطيل الأنواع المستخدمة بأمان، وحذف الأنواع غير المستخدمة من لوحة واحدة."
       />
 
       <AlertMessage type="success" message={successMessage} />
@@ -365,7 +443,7 @@ export function DocumentTypesManagementPage() {
           <div className="control-panel-card__header">
             <div>
               <h3>إضافة نوع جديد</h3>
-              <p className="muted">سيظهر النوع النشط مباشرة في نماذج إنشاء وتعديل الوثائق.</p>
+              <p className="muted">النوع النشط يظهر مباشرة في القوائم العامة ونماذج إنشاء وتعديل الوثائق.</p>
             </div>
           </div>
 
@@ -382,20 +460,20 @@ export function DocumentTypesManagementPage() {
         <div className="card control-panel-card--accent">
           <div className="control-panel-card__header">
             <div>
-              <h3>كيف تعمل القائمة الآن؟</h3>
-              <p className="muted">القوائم العامة تعرض الأنواع النشطة فقط، بينما تبقى الأنواع غير النشطة ظاهرة داخل الوثائق القديمة المرتبطة بها.</p>
+              <h3>قواعد الإدارة الآمنة</h3>
+              <p className="muted">القائمة العامة تعرض الأنواع النشطة فقط، بينما تبقى أسماء الأنواع غير النشطة ظاهرة داخل الوثائق القديمة المرتبطة بها.</p>
             </div>
           </div>
 
           <div className="control-panel-rules">
             <p>
-              يمكن <strong>حذف</strong> النوع إذا لم يُستخدم في أي وثيقة بعد.
+              يمكن <strong>إعادة تسمية</strong> النوع في أي وقت ما دام الاسم العربي غير مكرر بعد التطبيع.
             </p>
             <p>
-              إذا كان النوع مستخدمًا سابقًا، فيمكن <strong>تعطيله</strong> بدلًا من حذفه حتى لا يتأثر السجل التاريخي للوثائق.
+              يمكن <strong>تعطيل</strong> النوع المستخدم من دون التأثير على الوثائق القديمة، لكنه سيتوقف عن الظهور في النماذج الجديدة.
             </p>
             <p>
-              يتم منع تكرار الأسماء المتشابهة حتى لو اختلفت المسافات أو بعض أشكال الحروف العربية.
+              يمكن <strong>حذف</strong> النوع فقط إذا كان غير مستخدم في أي وثيقة.
             </p>
             <div className="control-panel-rules__meta">
               <span>إجمالي الأنواع: {count}</span>
@@ -409,30 +487,32 @@ export function DocumentTypesManagementPage() {
         <div className="control-panel-card__header">
           <div>
             <h3>قائمة أنواع الوثائق</h3>
-            <p className="muted">ابحث بالاسم، ثم عدّل أو عطّل أو احذف النوع حسب حالته واستخدامه.</p>
+            <p className="muted">ابحث بالاسم العربي فقط، ثم طبّق الحالة المطلوبة لمعرفة ما يمكن تعديله أو تعطيله أو حذفه بأمان.</p>
           </div>
         </div>
 
-        <form className="filters-grid document-types-toolbar" onSubmit={handleSearchSubmit}>
+        <form className="filters-grid document-types-toolbar" onSubmit={handleFiltersSubmit}>
           <label className="form-field full-row">
-            <span>بحث بالاسم</span>
+            <span>الاسم العربي</span>
             <input
               type="text"
-              value={searchInput}
-              onChange={(event) => setSearchInput(event.target.value)}
+              value={draftFilters.search}
+              onChange={(event) =>
+                setDraftFilters((current) => ({ ...current, search: event.target.value }))
+              }
               placeholder="اكتب جزءًا من اسم النوع"
-              aria-label="بحث أنواع الوثائق"
+              aria-label="بحث أنواع الوثائق بالاسم العربي"
             />
+            <small className="muted">يتم البحث في الاسم العربي المعروض فقط، مع تجاهل اختلاف المسافات وبعض أشكال الحروف العربية.</small>
           </label>
 
           <label className="form-field">
             <span>الحالة</span>
             <select
-              value={statusFilter}
-              onChange={(event) => {
-                setStatusFilter(event.target.value);
-                setPage(1);
-              }}
+              value={draftFilters.status}
+              onChange={(event) =>
+                setDraftFilters((current) => ({ ...current, status: event.target.value }))
+              }
             >
               <option value="all">الكل</option>
               <option value="active">النشطة فقط</option>
@@ -441,18 +521,9 @@ export function DocumentTypesManagementPage() {
           </label>
 
           <div className="document-types-toolbar__actions">
-            <button type="submit">بحث</button>
-            <button
-              type="button"
-              className="btn-secondary"
-              onClick={() => {
-                setSearchInput("");
-                setSearchQuery("");
-                setStatusFilter("all");
-                setPage(1);
-              }}
-            >
-              إعادة ضبط
+            <button type="submit">تطبيق</button>
+            <button type="button" className="btn-secondary" onClick={handleResetFilters}>
+              إعادة الضبط
             </button>
           </div>
         </form>
@@ -466,8 +537,7 @@ export function DocumentTypesManagementPage() {
                 <tr>
                   <th>اسم النوع</th>
                   <th>الحالة</th>
-                  <th>الاستخدام</th>
-                  <th>آخر تحديث</th>
+                  <th>عدد الاستخدامات</th>
                   <th>الإجراءات</th>
                 </tr>
               </thead>
@@ -477,7 +547,6 @@ export function DocumentTypesManagementPage() {
                     <td>
                       <div className="document-type-name-cell">
                         <strong>{documentType.name}</strong>
-                        <span className="muted">أضيف في {formatDateTime(documentType.created_at)}</span>
                       </div>
                     </td>
                     <td>
@@ -486,19 +555,26 @@ export function DocumentTypesManagementPage() {
                       </span>
                     </td>
                     <td>
-                      <span className={`document-type-usage ${documentType.is_used ? "document-type-usage--used" : "document-type-usage--unused"}`}>
-                        {documentType.is_used
-                          ? `مستخدم في ${documentType.documents_count} وثيقة`
-                          : "غير مستخدم بعد"}
-                      </span>
+                      <div className="document-type-usage-cell">
+                        <span
+                          className={`document-type-usage ${documentType.usage_count ? "document-type-usage--used" : "document-type-usage--unused"}`}
+                        >
+                          {documentType.usage_count}
+                        </span>
+                        <span className="muted">{formatUsageLabel(documentType.usage_count)}</span>
+                      </div>
                     </td>
-                    <td>{formatDateTime(documentType.updated_at)}</td>
                     <td>
                       <div className="user-actions">
-                        <button type="button" className="btn-secondary" onClick={() => handleStartEdit(documentType)}>
+                        <button
+                          type="button"
+                          className="btn-secondary"
+                          onClick={() => handleStartEdit(documentType)}
+                          disabled={isActionSubmitting}
+                        >
                           تعديل
                         </button>
-                        {documentType.is_used ? (
+                        {documentType.usage_count ? (
                           <button
                             type="button"
                             className={documentType.is_active ? "btn-warning" : "btn-secondary"}
@@ -525,7 +601,7 @@ export function DocumentTypesManagementPage() {
             </table>
           </div>
         ) : (
-          <EmptyBlock message="لا توجد أنواع وثائق مطابقة للبحث الحالي." />
+          <EmptyBlock message={getEmptyStateMessage(appliedFilters)} />
         )}
       </div>
 
@@ -549,7 +625,11 @@ export function DocumentTypesManagementPage() {
             <div className="control-panel-card__header">
               <div>
                 <h3>تعديل نوع الوثيقة</h3>
-                <p className="muted">يمكنك تعديل الاسم أو تغيير الحالة من دون التأثير على الوثائق القديمة المرتبطة بهذا النوع.</p>
+                <p className="muted">
+                  {editingType.usage_count
+                    ? `هذا النوع مرتبط حاليًا بـ ${editingType.usage_count} وثيقة، لذلك يمكن تعديل الاسم أو التعطيل بأمان مع بقاء الاسم ظاهرًا في الوثائق القديمة.`
+                    : "يمكنك تعديل الاسم أو الحالة، كما يمكن حذف النوع من الجدول الرئيسي لأنه غير مستخدم."}
+                </p>
               </div>
               <button type="button" className="btn-secondary" onClick={handleCloseEdit}>
                 إغلاق

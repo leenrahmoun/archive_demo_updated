@@ -1,6 +1,7 @@
 from django.urls import path
 
 from core.views import (
+    AdminDashboardAPIView,
     AdminDocumentTypeListCreateAPIView,
     AdminDocumentTypeRetrieveUpdateDestroyAPIView,
     AuditLogListAPIView,
@@ -27,6 +28,7 @@ from core.views import (
 urlpatterns = [
     path("auth/me/", MeAPIView.as_view(), name="auth-me"),
     path("auth/logout/", LogoutAPIView.as_view(), name="auth-logout"),
+    path("admin/dashboard/", AdminDashboardAPIView.as_view(), name="admin-dashboard"),
     path("users/", UserManagementListCreateAPIView.as_view(), name="user-list-create"),
     path("users/<int:pk>/", UserManagementRetrieveUpdateDestroyAPIView.as_view(), name="user-detail"),
     path("admin/document-types/", AdminDocumentTypeListCreateAPIView.as_view(), name="admin-document-type-list-create"),

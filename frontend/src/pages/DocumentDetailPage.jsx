@@ -2,12 +2,12 @@ import { useEffect, useRef, useState } from "react";
 import { Link, useLocation, useParams } from "react-router-dom";
 import {
   getDocumentById,
-  getDocumentPdfBlob,
   replaceDocumentPdf,
   submitDocument,
 } from "../api/documentsApi";
 import { useAuth } from "../auth/useAuth";
 import { AlertMessage } from "../components/AlertMessage";
+import { DocumentPdfPanel } from "../components/DocumentPdfPanel";
 import { DocumentWorkflowActions } from "../components/DocumentWorkflowActions";
 import { PageHeader } from "../components/PageHeader";
 import { EmptyBlock, LoadingBlock } from "../components/StateBlock";
@@ -21,56 +21,12 @@ export function DocumentDetailPage() {
   const location = useLocation();
   const { user } = useAuth();
   const fileInputRef = useRef(null);
-  const pdfPrintFrameRef = useRef(null);
   const [document, setDocument] = useState(null);
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState("");
-  const [isPdfVisible, setIsPdfVisible] = useState(false);
-  const [isPdfLoading, setIsPdfLoading] = useState(false);
-  const [pdfUrl, setPdfUrl] = useState("");
-  const [pdfError, setPdfError] = useState("");
   const [isReplacingFile, setIsReplacingFile] = useState(false);
   const [isSubmittingReview, setIsSubmittingReview] = useState(false);
-  const [isPrintingPdf, setIsPrintingPdf] = useState(false);
   const [feedback, setFeedback] = useState({ success: "", error: "" });
-
-  function clearPdfUrl() {
-    setPdfUrl((currentUrl) => {
-      if (currentUrl) {
-        URL.revokeObjectURL(currentUrl);
-      }
-      return "";
-    });
-  }
-
-  async function loadPdfPreview() {
-    try {
-      setIsPdfLoading(true);
-      setPdfError("");
-      const pdfBlob = await getDocumentPdfBlob(id);
-      const nextPdfUrl = URL.createObjectURL(pdfBlob);
-      setPdfUrl((currentUrl) => {
-        if (currentUrl) {
-          URL.revokeObjectURL(currentUrl);
-        }
-        return nextPdfUrl;
-      });
-      return nextPdfUrl;
-    } catch {
-      clearPdfUrl();
-      setPdfError("تعذر تحميل ملف PDF.");
-      return "";
-    } finally {
-      setIsPdfLoading(false);
-    }
-  }
-
-  async function ensurePdfUrlLoaded() {
-    if (pdfUrl) {
-      return pdfUrl;
-    }
-    return loadPdfPreview();
-  }
 
   async function refreshDocumentDetails() {
     const result = await getDocumentById(id);
@@ -99,91 +55,12 @@ export function DocumentDetailPage() {
       }
     }
 
-    setIsPdfVisible(false);
-    setPdfError("");
     setFeedback({
       success: location.state?.successMessage || "",
       error: "",
     });
-    clearPdfUrl();
     loadDocument();
   }, [id, location.state]);
-
-  useEffect(() => {
-    return () => {
-      if (pdfUrl) {
-        URL.revokeObjectURL(pdfUrl);
-      }
-      if (pdfPrintFrameRef.current) {
-        pdfPrintFrameRef.current.remove();
-        pdfPrintFrameRef.current = null;
-      }
-    };
-  }, [pdfUrl]);
-
-  async function handlePdfToggle() {
-    if (isPdfVisible) {
-      setIsPdfVisible(false);
-      return;
-    }
-
-    setIsPdfVisible(true);
-    if (!pdfUrl && !isPdfLoading) {
-      const nextPdfUrl = await loadPdfPreview();
-      if (!nextPdfUrl) {
-        setIsPdfVisible(false);
-      }
-    }
-  }
-
-  async function handlePrintPdf() {
-    setIsPrintingPdf(true);
-    setPdfError("");
-
-    try {
-      const nextPdfUrl = await ensurePdfUrlLoaded();
-      if (!nextPdfUrl) {
-        return;
-      }
-
-      if (pdfPrintFrameRef.current) {
-        pdfPrintFrameRef.current.remove();
-        pdfPrintFrameRef.current = null;
-      }
-
-      const printFrame = window.document.createElement("iframe");
-      printFrame.style.position = "fixed";
-      printFrame.style.width = "0";
-      printFrame.style.height = "0";
-      printFrame.style.border = "0";
-      printFrame.style.opacity = "0";
-      printFrame.setAttribute("aria-hidden", "true");
-      printFrame.src = nextPdfUrl;
-
-      printFrame.onload = () => {
-        window.setTimeout(() => {
-          try {
-            printFrame.contentWindow?.focus();
-            printFrame.contentWindow?.print();
-          } finally {
-            window.setTimeout(() => {
-              if (pdfPrintFrameRef.current === printFrame) {
-                printFrame.remove();
-                pdfPrintFrameRef.current = null;
-              }
-            }, 1500);
-          }
-        }, 250);
-      };
-
-      window.document.body.appendChild(printFrame);
-      pdfPrintFrameRef.current = printFrame;
-    } catch {
-      setPdfError("تعذر تجهيز ملف PDF للطباعة.");
-    } finally {
-      setIsPrintingPdf(false);
-    }
-  }
 
   function handleReplaceClick() {
     fileInputRef.current?.click();
@@ -196,26 +73,12 @@ export function DocumentDetailPage() {
       return;
     }
 
-    const shouldRefreshPreview = isPdfVisible;
     setFeedback({ success: "", error: "" });
 
     try {
       setIsReplacingFile(true);
       await replaceDocumentPdf(id, nextFile);
       await refreshDocumentDetails();
-      clearPdfUrl();
-      setPdfError("");
-
-      if (shouldRefreshPreview) {
-        setIsPdfVisible(true);
-        const nextPdfUrl = await loadPdfPreview();
-        if (!nextPdfUrl) {
-          setIsPdfVisible(false);
-        }
-      } else {
-        setIsPdfVisible(false);
-      }
-
       setFeedback({ success: "تم استبدال ملف PDF بنجاح.", error: "" });
     } catch (requestError) {
       setFeedback({
@@ -312,6 +175,7 @@ export function DocumentDetailPage() {
     : isAuditor
       ? "يمكنك قراءة الملف وطباعته ضمن نطاقك المسموح فقط. لا تتاح لك أي إجراءات تعديل على الوثيقة."
       : "يمكنك قراءة ملف الوثيقة داخل الصفحة أو طباعته. تظهر إجراءات التعديل فقط عندما تكون متاحة حسب الدور والحالة.";
+  const documentActionRowVisible = canEditDocument || (canReplacePdf && !isRejected);
 
   return (
     <section>
@@ -447,75 +311,33 @@ export function DocumentDetailPage() {
           <strong>ملاحظات:</strong> {document.notes || "-"}
         </p>
 
-        {canEditDocument ? (
-          <p className="full-row" style={{ marginTop: "1rem" }}>
-            <Link to={`/documents/${document.id}/edit`} className="button">
-              تعديل الوثيقة
-            </Link>
-          </p>
-        ) : null}
-      </div>
-
-      <div className="card document-file-card">
-        <div className="document-file-card__header">
-          <div>
-            <h3>{pdfSectionTitle}</h3>
-            <p className="muted">{pdfSectionHelper}</p>
-          </div>
-          <div className="document-file-card__actions">
-            <button
-              type="button"
-              className="btn-secondary"
-              onClick={handlePdfToggle}
-              disabled={isPdfLoading || isPrintingPdf}
-            >
-              {isPdfVisible ? "إخفاء القراءة" : "قراءة الملف"}
-            </button>
-            <button
-              type="button"
-              className="btn-secondary"
-              onClick={handlePrintPdf}
-              disabled={isPdfLoading || isPrintingPdf}
-            >
-              {isPrintingPdf ? "جارٍ تجهيز الطباعة..." : "طباعة الملف"}
-            </button>
+        {documentActionRowVisible ? (
+          <div className="full-row document-detail-actions">
+            {canEditDocument ? (
+              <Link to={`/documents/${document.id}/edit`} className="button">
+                تعديل الوثيقة
+              </Link>
+            ) : null}
             {canReplacePdf && !isRejected ? (
               <button
                 type="button"
                 className="btn-secondary"
                 onClick={handleReplaceClick}
-                disabled={isReplacingFile || isPdfLoading || isPrintingPdf}
+                disabled={isReplacingFile}
               >
                 {isReplacingFile ? "جارٍ استبدال الملف..." : "استبدال ملف PDF"}
               </button>
             ) : null}
           </div>
-        </div>
-
-        {pdfUrl ? (
-          <a href={pdfUrl} target="_blank" rel="noreferrer">
-            فتح الملف في نافذة مستقلة
-          </a>
-        ) : null}
-
-        {pdfError ? <AlertMessage type="error" message={pdfError} /> : null}
-
-        {isPdfVisible ? (
-          <div className="document-file-card__preview">
-            {pdfUrl ? (
-              <iframe
-                src={pdfUrl}
-                title={`PDF ${document.doc_name}`}
-                className="document-file-card__frame"
-              />
-            ) : (
-              <div className="state-block info" style={{ margin: "1rem" }}>
-                جارٍ تحميل ملف PDF...
-              </div>
-            )}
-          </div>
         ) : null}
       </div>
+
+      <DocumentPdfPanel
+        document={document}
+        title={pdfSectionTitle}
+        helperText={pdfSectionHelper}
+        refreshKey={`${document.file_path || ""}:${document.updated_at || ""}`}
+      />
 
       {shouldShowWorkflowActions ? (
         <DocumentWorkflowActions
