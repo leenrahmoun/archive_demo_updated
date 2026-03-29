@@ -9,12 +9,13 @@ function escapeHtml(value) {
     .replaceAll("'", "&#39;");
 }
 
-function renderPrintWindowMarkup({ title, bodyContent, accentColor = "#1d4ed8" }) {
+function renderPdfWindowMarkup({ title, bodyContent, accentColor = "#1d4ed8" }) {
   return `<!DOCTYPE html>
 <html lang="ar" dir="rtl">
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="referrer" content="no-referrer" />
     <title>${escapeHtml(title)}</title>
     <style>
       :root {
@@ -156,10 +157,10 @@ function renderPrintWindowMarkup({ title, bodyContent, accentColor = "#1d4ed8" }
 </html>`;
 }
 
-function writePrintWindow(printWindow, markup) {
-  printWindow.document.open();
-  printWindow.document.write(markup);
-  printWindow.document.close();
+function writePdfWindow(targetWindow, markup) {
+  targetWindow.document.open();
+  targetWindow.document.write(markup);
+  targetWindow.document.close();
 }
 
 export async function extractPdfRequestErrorMessage(requestError, fallbackMessage) {
@@ -187,6 +188,162 @@ export async function extractPdfRequestErrorMessage(requestError, fallbackMessag
 
   const messages = flattenErrors(responseData);
   return messages[0] || fallbackMessage;
+}
+
+export async function startPdfReadingSession({ documentTitle, loadPdfBlob }) {
+  const title = documentTitle || "قراءة ملف الوثيقة";
+  const readerWindow = window.open("", "_blank");
+
+  if (!readerWindow) {
+    throw new Error("تعذر فتح صفحة القراءة الجديدة. يرجى السماح بالنوافذ الجديدة لهذا الموقع ثم المحاولة مرة أخرى.");
+  }
+
+  try {
+    readerWindow.opener = null;
+  } catch {
+    // Ignore browser-specific failures when trying to detach the opener.
+  }
+
+  let readerUrl = "";
+  let closeWatcherId = null;
+  let cleaned = false;
+
+  const cleanup = () => {
+    if (cleaned) {
+      return;
+    }
+    cleaned = true;
+    if (closeWatcherId) {
+      window.clearInterval(closeWatcherId);
+      closeWatcherId = null;
+    }
+    if (readerUrl) {
+      URL.revokeObjectURL(readerUrl);
+      readerUrl = "";
+    }
+  };
+
+  const closeWindow = () => {
+    cleanup();
+    try {
+      if (!readerWindow.closed) {
+        readerWindow.close();
+      }
+    } catch {
+      // Ignore browser-specific close failures.
+    }
+  };
+
+  try {
+    writePdfWindow(
+      readerWindow,
+      renderPdfWindowMarkup({
+        title,
+        bodyContent: `
+          <section class="loading-card">
+            <h1>${escapeHtml(title)}</h1>
+            <p>يتم تجهيز صفحة قراءة مستقلة لملف PDF الآن. ستظهر النسخة الكاملة داخل هذه الصفحة بعد اكتمال التحميل.</p>
+          </section>
+        `,
+      })
+    );
+
+    const pdfBlob = await loadPdfBlob();
+    readerUrl = URL.createObjectURL(pdfBlob);
+
+    closeWatcherId = window.setInterval(() => {
+      if (readerWindow.closed) {
+        cleanup();
+      }
+    }, 750);
+
+    writePdfWindow(
+      readerWindow,
+      renderPdfWindowMarkup({
+        title,
+        bodyContent: `
+          <section class="print-shell">
+            <header class="print-header">
+              <h1>${escapeHtml(title)}</h1>
+              <p>هذه صفحة قراءة مستقلة للملف. يمكنك إبقاؤها مفتوحة للقراءة المطولة أو استخدام زر الطباعة عند الحاجة.</p>
+            </header>
+            <main class="print-main">
+              <section class="print-card">
+                <div class="print-status">
+                  <div>
+                    <strong>جاهز للقراءة</strong>
+                    <p id="reader-status-text">يتم فتح ملف PDF داخل هذه الصفحة الآن.</p>
+                  </div>
+                  <div class="print-actions">
+                    <button id="reader-print-button" type="button" class="print-button print-button--primary">طباعة الملف</button>
+                    <button id="close-window-button" type="button" class="print-button">إغلاق الصفحة</button>
+                  </div>
+                </div>
+                <iframe
+                  id="pdf-reader-frame"
+                  class="print-frame"
+                  title="${escapeHtml(title)}"
+                  src="${escapeHtml(readerUrl)}"
+                ></iframe>
+              </section>
+            </main>
+          </section>
+          <script>
+            (() => {
+              const statusText = document.getElementById("reader-status-text");
+              const printButton = document.getElementById("reader-print-button");
+              const closeButton = document.getElementById("close-window-button");
+              const frame = document.getElementById("pdf-reader-frame");
+
+              frame.addEventListener("load", () => {
+                statusText.textContent = "تم تحميل ملف PDF بنجاح. يمكنك القراءة داخل هذه الصفحة أو طباعته عند الحاجة.";
+              }, { once: true });
+
+              printButton.addEventListener("click", () => {
+                statusText.textContent = "يتم تجهيز نافذة الطباعة من هذه الصفحة.";
+                try {
+                  frame.contentWindow.focus();
+                  frame.contentWindow.print();
+                } catch (error) {
+                  try {
+                    window.focus();
+                    window.print();
+                  } catch (printError) {
+                    statusText.textContent = "تعذر فتح نافذة الطباعة تلقائيًا. يمكنك استخدام أمر الطباعة من المتصفح.";
+                  }
+                }
+              });
+
+              closeButton.addEventListener("click", () => {
+                window.close();
+              });
+            })();
+          </script>
+        `,
+      })
+    );
+
+    return { cleanup, closeWindow };
+  } catch (error) {
+    writePdfWindow(
+      readerWindow,
+      renderPdfWindowMarkup({
+        title,
+        accentColor: "#b42318",
+        bodyContent: `
+          <section class="error-card">
+            <h1>${escapeHtml(title)}</h1>
+            <p>تعذر فتح ملف PDF في صفحة جديدة. يمكنك إغلاق هذه الصفحة ثم إعادة المحاولة من داخل النظام.</p>
+            <div class="print-actions" style="margin-top: 1rem;">
+              <button type="button" class="print-button" onclick="window.close()">إغلاق الصفحة</button>
+            </div>
+          </section>
+        `,
+      })
+    );
+    cleanup();
+    throw error;
+  }
 }
 
 export async function startPdfPrintSession({ documentTitle, loadPdfBlob }) {
@@ -228,9 +385,9 @@ export async function startPdfPrintSession({ documentTitle, loadPdfBlob }) {
   };
 
   try {
-    writePrintWindow(
+    writePdfWindow(
       printWindow,
-      renderPrintWindowMarkup({
+      renderPdfWindowMarkup({
         title,
         bodyContent: `
           <section class="loading-card">
@@ -250,9 +407,9 @@ export async function startPdfPrintSession({ documentTitle, loadPdfBlob }) {
       }
     }, 750);
 
-    writePrintWindow(
+    writePdfWindow(
       printWindow,
-      renderPrintWindowMarkup({
+      renderPdfWindowMarkup({
         title,
         bodyContent: `
           <section class="print-shell">
@@ -344,9 +501,9 @@ export async function startPdfPrintSession({ documentTitle, loadPdfBlob }) {
 
     return { cleanup, closeWindow };
   } catch (error) {
-    writePrintWindow(
+    writePdfWindow(
       printWindow,
-      renderPrintWindowMarkup({
+      renderPdfWindowMarkup({
         title,
         accentColor: "#b42318",
         bodyContent: `

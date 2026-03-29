@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from "react";
 import { Link } from "react-router-dom";
 import { getAdminDashboard } from "../api/adminDashboardApi";
 import { AlertMessage } from "../components/AlertMessage";
+import { BrandLockup } from "../components/BrandLockup";
 import { PageHeader } from "../components/PageHeader";
 import { EmptyBlock, LoadingBlock } from "../components/StateBlock";
 import { formatDate } from "../utils/format";
@@ -65,12 +66,12 @@ const DASHBOARD_OPERATIONAL_SECTIONS = [
 ];
 
 const TONE_COLORS = {
-  default: "#20589f",
-  success: "#208053",
-  warning: "#b7791f",
-  danger: "#c14f4f",
-  neutral: "#6f7f96",
-  muted: "#8d96a8",
+  default: "#0B6B5C",
+  success: "#1F7B59",
+  warning: "#C5A86A",
+  danger: "#C14F4F",
+  neutral: "#7A8C84",
+  muted: "#9AA69F",
 };
 
 function formatCount(value) {
@@ -230,14 +231,14 @@ function WorkSegments({ segments, total }) {
   );
 }
 
-function DonutCard({ chart }) {
+function DonutCard({ chart, className = "" }) {
   const items = chart?.items || [];
 
   return (
-    <article className="card dashboard-panel dashboard-panel--status">
+    <article className={`card dashboard-panel dashboard-panel--status dashboard-panel--analytics ${className}`.trim()}>
       <SectionHeader
         title="توزيع حالات الوثائق"
-        description="الصورة الحالية لحركة الوثائق النشطة بين المسودات والمراجعة والاعتماد والرفض."
+        description="الوثائق النشطة حسب حالتها الحالية."
       />
 
       <div className="dashboard-status-card">
@@ -250,14 +251,16 @@ function DonutCard({ chart }) {
 
         <div className="dashboard-legend">
           {items.map((item) => (
-            <div key={item.key} className="dashboard-legend__item">
-              <span
-                className="dashboard-legend__swatch"
-                style={{ backgroundColor: TONE_COLORS[item.tone] || TONE_COLORS.default }}
-              />
-              <strong className="dashboard-legend__label">{item.label}</strong>
+            <article key={item.key} className="dashboard-legend__item">
+              <div className="dashboard-legend__head">
+                <span
+                  className="dashboard-legend__swatch"
+                  style={{ backgroundColor: TONE_COLORS[item.tone] || TONE_COLORS.default }}
+                />
+                <strong className="dashboard-legend__label">{item.label}</strong>
+              </div>
               <span className="dashboard-legend__value">{formatCount(item.value)}</span>
-            </div>
+            </article>
           ))}
         </div>
       </div>
@@ -265,14 +268,14 @@ function DonutCard({ chart }) {
   );
 }
 
-function TimelineCard({ title, description, items, grouped = false }) {
+function TimelineCard({ title, description, items, grouped = false, className = "" }) {
   const maxValue = Math.max(
     1,
     ...items.map((item) => (grouped ? Math.max(item.approved_value || 0, item.rejected_value || 0) : item.value || 0)),
   );
 
   return (
-    <article className="card dashboard-panel">
+    <article className={`card dashboard-panel dashboard-panel--analytics ${className}`.trim()}>
       <SectionHeader title={title} description={description} />
 
       <div className={`dashboard-timeline${grouped ? " dashboard-timeline--grouped" : ""}`}>
@@ -741,42 +744,50 @@ export function AdminDashboardPage() {
 
       {activeDashboardSection === "indicators" ? (
         <section className="card dashboard-hero">
-        <div className="dashboard-hero__content">
-          <span className="dashboard-hero__eyebrow">متابعة تنفيذية لحظية</span>
-          <h3>صورة واحدة للحمل الحالي، المخرجات، والاختناقات داخل دورة الأرشفة.</h3>
-          <p>
-            يوجد الآن {formatCount(workflow.pending_review_documents)} وثيقة بانتظار المراجعة، و
-            {formatCount(workflow.rejected_waiting_correction_documents)} وثيقة تحتاج تصحيحًا، بينما تم
-            اعتماد {formatCount(workflow.approved_documents)} وثيقة.
-          </p>
-        </div>
+          <div className="dashboard-hero__content">
+            <div className="dashboard-hero__brand">
+              <BrandLockup
+                compact
+                title="وزارة التطوير الإداري"
+                subtitle="لوحة المتابعة التنفيذية"
+                note="عرض مؤسسي سريع لحالة الوثائق والفريق."
+              />
+            </div>
+            <span className="dashboard-hero__eyebrow">متابعة تنفيذية لحظية</span>
+            <h3>صورة واحدة للحمل الحالي، المخرجات، والاختناقات داخل دورة الأرشفة.</h3>
+            <p>
+              يوجد الآن {formatCount(workflow.pending_review_documents)} وثيقة بانتظار المراجعة، و
+              {formatCount(workflow.rejected_waiting_correction_documents)} وثيقة تحتاج تصحيحًا، بينما تم
+              اعتماد {formatCount(workflow.approved_documents)} وثيقة.
+            </p>
+          </div>
 
-        <div className="dashboard-hero__insights">
-          <InsightChip
-            label="الأكثر إنشاءً للأضابير"
-            value={insights.topDossierCreator ? insights.topDossierCreator.display_name : "لا يوجد"}
-            helperText={insights.topDossierCreator ? `${formatCount(insights.topDossierCreator.dossiers_created_count)} أضبارة` : "لا توجد حركة"}
-          />
-          <InsightChip
-            label="الأكثر إنشاءً للوثائق"
-            value={insights.topDocumentCreator ? insights.topDocumentCreator.display_name : "لا يوجد"}
-            helperText={insights.topDocumentCreator ? `${formatCount(insights.topDocumentCreator.documents_created_count)} وثيقة` : "لا توجد حركة"}
-            tone="success"
-          />
-          <InsightChip
-            label="الأكثر إرسالًا للمراجعة"
-            value={insights.topSubmitter ? insights.topSubmitter.display_name : "لا يوجد"}
-            helperText={insights.topSubmitter ? `${formatCount(insights.topSubmitter.submissions_count)} إرسال` : "لا توجد حركة"}
-            tone="warning"
-          />
-          <InsightChip
-            label="المدقق الأعلى ضغطًا"
-            value={insights.busiestAuditor ? insights.busiestAuditor.display_name : "لا يوجد"}
-            helperText={insights.busiestAuditor ? `${formatCount(getAuditorBacklog(insights.busiestAuditor))} ملفًا يحتاج متابعة` : "لا يوجد ضغط حالي"}
-            tone="danger"
-          />
-        </div>
-      </section>
+          <div className="dashboard-hero__insights">
+            <InsightChip
+              label="الأكثر إنشاءً للأضابير"
+              value={insights.topDossierCreator ? insights.topDossierCreator.display_name : "لا يوجد"}
+              helperText={insights.topDossierCreator ? `${formatCount(insights.topDossierCreator.dossiers_created_count)} أضبارة` : "لا توجد حركة"}
+            />
+            <InsightChip
+              label="الأكثر إنشاءً للوثائق"
+              value={insights.topDocumentCreator ? insights.topDocumentCreator.display_name : "لا يوجد"}
+              helperText={insights.topDocumentCreator ? `${formatCount(insights.topDocumentCreator.documents_created_count)} وثيقة` : "لا توجد حركة"}
+              tone="success"
+            />
+            <InsightChip
+              label="الأكثر إرسالًا للمراجعة"
+              value={insights.topSubmitter ? insights.topSubmitter.display_name : "لا يوجد"}
+              helperText={insights.topSubmitter ? `${formatCount(insights.topSubmitter.submissions_count)} إرسال` : "لا توجد حركة"}
+              tone="warning"
+            />
+            <InsightChip
+              label="المدقق الأعلى ضغطًا"
+              value={insights.busiestAuditor ? insights.busiestAuditor.display_name : "لا يوجد"}
+              helperText={insights.busiestAuditor ? `${formatCount(getAuditorBacklog(insights.busiestAuditor))} ملفًا يحتاج متابعة` : "لا يوجد ضغط حالي"}
+              tone="danger"
+            />
+          </div>
+        </section>
       ) : null}
 
       <section className="dashboard-modern__section dashboard-modern__section--kpis">
@@ -823,25 +834,27 @@ export function AdminDashboardPage() {
 
       {activeDashboardSection === "analytics" ? (
         <section className="dashboard-modern__section dashboard-modern__section--analytics">
-        <SectionHeader
-          title="التحليلات البصرية"
-          description="رسوم مبسطة تساعد على قراءة الاتجاهات بدل الاكتفاء بأرقام ثابتة أو قوائم طويلة."
-        />
-        <div className="dashboard-analytics-grid">
-          <DonutCard chart={charts.documents_by_status} />
-          <TimelineCard
-            title="الوثائق المنشأة خلال الأيام الأخيرة"
-            description={`تم تجميع الإنشاءات خلال آخر ${formatCount(charts.documents_created_over_time.window_days)} أيام.`}
-            items={charts.documents_created_over_time.items}
-          />
-          <TimelineCard
-            title="قرارات الاعتماد والرفض عبر الوقت"
-            description="يبين إيقاع المراجعة وما إذا كانت الحركة تميل إلى الاعتماد أو تتراكم فيها حالات الرفض."
-            items={charts.approvals_rejections_over_time.items}
-            grouped
-          />
-        </div>
-      </section>
+          <SectionHeader title="التحليلات البصرية" description="عرض سريع لاتجاهات الإنشاء والمراجعة." />
+          <div className="dashboard-analytics-grid">
+            <DonutCard
+              chart={charts.documents_by_status}
+              className="dashboard-analytics-grid__item dashboard-analytics-grid__item--status"
+            />
+            <TimelineCard
+              title="إنشاء الوثائق"
+              description={`آخر ${formatCount(charts.documents_created_over_time.window_days)} أيام.`}
+              items={charts.documents_created_over_time.items}
+              className="dashboard-analytics-grid__item"
+            />
+            <TimelineCard
+              title="قرارات المراجعة"
+              description="مقارنة موجزة بين الاعتماد والرفض خلال الفترة الحالية."
+              items={charts.approvals_rejections_over_time.items}
+              grouped
+              className="dashboard-analytics-grid__item dashboard-analytics-grid__item--wide"
+            />
+          </div>
+        </section>
       ) : null}
 
       {activeDashboardSection === "operations" ? (

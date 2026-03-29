@@ -1,6 +1,10 @@
 import { useEffect, useRef, useState } from "react";
 import { getDocumentPdfBlob } from "../api/documentsApi";
-import { extractPdfRequestErrorMessage, startPdfPrintSession } from "../utils/documentPdf";
+import {
+  extractPdfRequestErrorMessage,
+  startPdfPrintSession,
+  startPdfReadingSession,
+} from "../utils/documentPdf";
 import { AlertMessage } from "./AlertMessage";
 
 export function DocumentPdfPanel({ document, title, helperText, refreshKey }) {
@@ -12,6 +16,7 @@ export function DocumentPdfPanel({ document, title, helperText, refreshKey }) {
   const [previewUrl, setPreviewUrl] = useState("");
   const [pdfError, setPdfError] = useState("");
   const [isPrintingPdf, setIsPrintingPdf] = useState(false);
+  const [isOpeningExternalPdf, setIsOpeningExternalPdf] = useState(false);
 
   function replacePreviewUrl(nextUrl) {
     previewUrlRef.current = nextUrl;
@@ -103,9 +108,30 @@ export function DocumentPdfPanel({ document, title, helperText, refreshKey }) {
     }
   }
 
+  async function handleOpenInNewTab() {
+    setIsOpeningExternalPdf(true);
+    setPdfError("");
+
+    try {
+      await startPdfReadingSession({
+        documentTitle: document.doc_name || `الوثيقة ${document.doc_number || document.id}`,
+        loadPdfBlob: () => getDocumentPdfBlob(document.id),
+      });
+    } catch (requestError) {
+      const fallbackMessage =
+        requestError instanceof Error && requestError.message
+          ? requestError.message
+          : "تعذر فتح ملف PDF في صفحة جديدة.";
+      setPdfError(await extractPdfRequestErrorMessage(requestError, fallbackMessage));
+    } finally {
+      setIsOpeningExternalPdf(false);
+    }
+  }
+
   useEffect(() => {
     setIsPreviewVisible(false);
     setIsPreviewLoading(false);
+    setIsOpeningExternalPdf(false);
     setPdfError("");
     clearPreviewUrl();
     clearPrintSession();
@@ -171,7 +197,7 @@ export function DocumentPdfPanel({ document, title, helperText, refreshKey }) {
             type="button"
             className="btn-secondary"
             onClick={handlePreviewToggle}
-            disabled={isPreviewLoading || isPrintingPdf}
+            disabled={isPreviewLoading || isPrintingPdf || isOpeningExternalPdf}
           >
             {isPreviewVisible ? "إخفاء القراءة" : "قراءة الملف"}
           </button>
@@ -179,9 +205,17 @@ export function DocumentPdfPanel({ document, title, helperText, refreshKey }) {
             type="button"
             className="btn-secondary"
             onClick={handlePrint}
-            disabled={isPreviewLoading || isPrintingPdf}
+            disabled={isPreviewLoading || isPrintingPdf || isOpeningExternalPdf}
           >
             {isPrintingPdf ? "جارٍ تجهيز الطباعة..." : "طباعة الملف"}
+          </button>
+          <button
+            type="button"
+            className="btn-secondary"
+            onClick={handleOpenInNewTab}
+            disabled={isPreviewLoading || isPrintingPdf || isOpeningExternalPdf}
+          >
+            {isOpeningExternalPdf ? "جارٍ فتح الصفحة الجديدة..." : "فتح الملف في صفحة جديدة"}
           </button>
         </div>
       </div>
