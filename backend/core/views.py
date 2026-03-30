@@ -60,6 +60,7 @@ from core.services.document_workflow_service import (
     soft_delete_document,
     submit_document,
 )
+from core.user_visibility import exclude_emergency_only_audit_logs, get_operational_user_queryset
 
 
 class StandardListPagination(PageNumberPagination):
@@ -361,10 +362,13 @@ class AdminDashboardAPIView(APIView):
         user = request.user
         recent_cutoff = timezone.now() - timedelta(days=RECENT_DASHBOARD_WINDOW_DAYS)
         chart_start_date = timezone.localdate() - timedelta(days=DASHBOARD_CHART_WINDOW_DAYS - 1)
+        operational_users = get_operational_user_queryset()
 
         visible_dossiers = get_dossier_visibility_queryset(user)
         visible_documents = get_document_visibility_queryset(user)
-        visible_audit_logs = annotate_audit_log_human_fields(get_audit_log_visibility_queryset(user))
+        visible_audit_logs = annotate_audit_log_human_fields(
+            exclude_emergency_only_audit_logs(get_audit_log_visibility_queryset(user))
+        )
 
         summary = visible_documents.aggregate(
             total_active_documents=Count("id"),
@@ -375,7 +379,7 @@ class AdminDashboardAPIView(APIView):
         )
         summary["total_dossiers"] = visible_dossiers.count()
         summary["soft_deleted_documents"] = Document.objects.filter(is_deleted=True).count()
-        summary["total_active_users"] = User.objects.filter(is_active=True).count()
+        summary["total_active_users"] = operational_users.filter(is_active=True).count()
 
         workflow = {
             "pending_review_documents": summary["pending_documents"],
@@ -385,7 +389,7 @@ class AdminDashboardAPIView(APIView):
             "recent_window_days": RECENT_DASHBOARD_WINDOW_DAYS,
         }
 
-        user_activity = User.objects.aggregate(
+        user_activity = operational_users.aggregate(
             total_data_entry_users=Count("id", filter=Q(role=UserRole.DATA_ENTRY)),
             total_auditors=Count("id", filter=Q(role=UserRole.AUDITOR)),
             total_readers=Count("id", filter=Q(role=UserRole.READER)),
@@ -396,7 +400,7 @@ class AdminDashboardAPIView(APIView):
             ),
         )
         user_activity["auditors_with_zero_assigned_data_entry_users"] = (
-            User.objects.filter(role=UserRole.AUDITOR)
+            operational_users.filter(role=UserRole.AUDITOR)
             .annotate(
                 assigned_data_entry_users_count=Count(
                     "assigned_data_entries",
@@ -409,7 +413,7 @@ class AdminDashboardAPIView(APIView):
         )
 
         data_entry_users = list(
-            User.objects.filter(role=UserRole.DATA_ENTRY)
+            operational_users.filter(role=UserRole.DATA_ENTRY)
             .select_related("assigned_auditor")
             .order_by("first_name", "last_name", "username", "id")
         )
@@ -446,7 +450,7 @@ class AdminDashboardAPIView(APIView):
         }
         data_entry_log_stats = {
             item["user_id"]: item
-            for item in AuditLog.objects.filter(user__role=UserRole.DATA_ENTRY)
+            for item in AuditLog.objects.filter(user__role=UserRole.DATA_ENTRY, user__is_superuser=False)
             .values("user_id")
             .annotate(
                 submissions_count=Count(
@@ -498,11 +502,11 @@ class AdminDashboardAPIView(APIView):
         )
 
         auditors = list(
-            User.objects.filter(role=UserRole.AUDITOR).order_by("first_name", "last_name", "username", "id")
+            operational_users.filter(role=UserRole.AUDITOR).order_by("first_name", "last_name", "username", "id")
         )
         assigned_data_entry_stats = {
             item["assigned_auditor_id"]: item["assigned_data_entry_count"]
-            for item in User.objects.filter(role=UserRole.DATA_ENTRY, assigned_auditor__isnull=False)
+            for item in operational_users.filter(role=UserRole.DATA_ENTRY, assigned_auditor__isnull=False)
             .values("assigned_auditor_id")
             .annotate(assigned_data_entry_count=Count("id"))
         }
@@ -528,7 +532,11 @@ class AdminDashboardAPIView(APIView):
         }
         auditor_review_log_stats = {
             item["user_id"]: item
-            for item in AuditLog.objects.filter(user__role=UserRole.AUDITOR, entity_type="document")
+            for item in AuditLog.objects.filter(
+                user__role=UserRole.AUDITOR,
+                user__is_superuser=False,
+                entity_type="document",
+            )
             .values("user_id")
             .annotate(
                 reviewed_documents_count=Count(
@@ -583,6 +591,7 @@ class AdminDashboardAPIView(APIView):
         admin_review_activity = AdminDashboardAdminReviewActivitySerializer(
             AuditLog.objects.filter(
                 user__role=UserRole.ADMIN,
+                user__is_superuser=False,
                 entity_type="document",
                 action__in=[AuditAction.APPROVE, AuditAction.REJECT],
             ).aggregate(
@@ -835,7 +844,7 @@ class AuditLogListAPIView(generics.ListAPIView):
     pagination_class = AuditLogPagination
 
     def get_queryset(self):
-        queryset = get_audit_log_visibility_queryset(self.request.user)
+        queryset = exclude_emergency_only_audit_logs(get_audit_log_visibility_queryset(self.request.user))
         queryset = apply_audit_log_filters(queryset, self.request.query_params)
         queryset = annotate_audit_log_human_fields(queryset)
         queryset = apply_audit_log_search(queryset, self.request.query_params)
@@ -847,7 +856,9 @@ class AuditLogRetrieveAPIView(generics.RetrieveAPIView):
     serializer_class = AuditLogSerializer
 
     def get_queryset(self):
-        return annotate_audit_log_human_fields(get_audit_log_visibility_queryset(self.request.user))
+        return annotate_audit_log_human_fields(
+            exclude_emergency_only_audit_logs(get_audit_log_visibility_queryset(self.request.user))
+        )
 
 
 class UserManagementListCreateAPIView(generics.ListCreateAPIView):
@@ -861,7 +872,7 @@ class UserManagementListCreateAPIView(generics.ListCreateAPIView):
     ordering = ["-date_joined"]
 
     def get_queryset(self):
-        queryset = User.objects.select_related("assigned_auditor").all().order_by("-date_joined", "-id")
+        queryset = get_operational_user_queryset().select_related("assigned_auditor").order_by("-date_joined", "-id")
 
         role = self.request.query_params.get("role")
         if role:
@@ -889,7 +900,7 @@ class UserManagementRetrieveUpdateDestroyAPIView(generics.RetrieveUpdateDestroyA
     """Admin-only endpoint for retrieving, updating and deleting users."""
     permission_classes = [IsAuthenticated, AdminOnlyPermission]
     serializer_class = UserManagementSerializer
-    queryset = User.objects.select_related("assigned_auditor").all()
+    queryset = get_operational_user_queryset().select_related("assigned_auditor")
 
 
 class AuditorReviewQueueAPIView(generics.ListAPIView):

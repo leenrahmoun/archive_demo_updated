@@ -28,6 +28,13 @@ function createDefaultFilters() {
   };
 }
 
+function buildAppliedFilters(draftFilters) {
+  return {
+    search: draftFilters.search.trim(),
+    status: draftFilters.status,
+  };
+}
+
 function buildEditForm(documentType) {
   return {
     name: documentType.name || "",
@@ -208,7 +215,7 @@ export function DocumentTypesManagementPage() {
   const [editingType, setEditingType] = useState(null);
   const [editForm, setEditForm] = useState(createEmptyForm());
   const [draftFilters, setDraftFilters] = useState(createDefaultFilters());
-  const [appliedFilters, setAppliedFilters] = useState(createDefaultFilters());
+  const [appliedFilters, setAppliedFilters] = useState(() => buildAppliedFilters(createDefaultFilters()));
   const [page, setPage] = useState(1);
   const [count, setCount] = useState(0);
   const [hasNextPage, setHasNextPage] = useState(false);
@@ -254,6 +261,21 @@ export function DocumentTypesManagementPage() {
 
     loadDocumentTypes(page, true);
   }, [loadDocumentTypes, page, user]);
+
+  useEffect(() => {
+    const timeoutId = window.setTimeout(() => {
+      const nextFilters = buildAppliedFilters(draftFilters);
+      setPage(1);
+      setAppliedFilters((current) => {
+        if (current.search === nextFilters.search && current.status === nextFilters.status) {
+          return current;
+        }
+        return nextFilters;
+      });
+    }, 250);
+
+    return () => window.clearTimeout(timeoutId);
+  }, [draftFilters]);
 
   function handleFormChange(setForm, setError) {
     return (event) => {
@@ -401,17 +423,15 @@ export function DocumentTypesManagementPage() {
 
   function handleFiltersSubmit(event) {
     event.preventDefault();
+    const nextFilters = buildAppliedFilters(draftFilters);
     setPage(1);
-    setAppliedFilters({
-      search: draftFilters.search.trim(),
-      status: draftFilters.status,
-    });
+    setAppliedFilters(nextFilters);
   }
 
   function handleResetFilters() {
     const nextFilters = createDefaultFilters();
     setDraftFilters(nextFilters);
-    setAppliedFilters(nextFilters);
+    setAppliedFilters(buildAppliedFilters(nextFilters));
     setPage(1);
   }
 
@@ -503,7 +523,6 @@ export function DocumentTypesManagementPage() {
               placeholder="اكتب جزءًا من اسم النوع"
               aria-label="بحث أنواع الوثائق بالاسم العربي"
             />
-            <small className="muted">يتم البحث في الاسم العربي المعروض فقط، مع تجاهل اختلاف المسافات وبعض أشكال الحروف العربية.</small>
           </label>
 
           <label className="form-field">

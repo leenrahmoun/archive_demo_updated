@@ -95,17 +95,10 @@ export function AuditLogListPage() {
     <section>
       <PageHeader
         title="سجل التدقيق"
-        subtitle="ابحث باسم المنفذ أو نوع الإجراء أو المرجع المرتبط بالعملية ضمن قائمة واضحة ومختصرة."
       />
 
       <div className="card control-panel-card--accent audit-log-filter-card">
         <div className="audit-log-filter-card__header">
-          <div>
-            <h3>ابحث بسرعة</h3>
-            <p className="muted">
-              استخدم كلمة واحدة مثل اسم المستخدم أو اسم الوثيقة أو الإجراء للوصول إلى السجل المناسب بسرعة.
-            </p>
-          </div>
         </div>
 
         <FilterSection>

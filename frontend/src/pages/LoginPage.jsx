@@ -40,7 +40,7 @@ export function LoginPage() {
         <section className="auth-brand-panel">
           <BrandLockup
             className="auth-brand-panel__lockup"
-            title="وزارة التطوير الإداري"
+            title="وزارة التنمية الإدارية"
             subtitle="النظام الداخلي للأرشفة وإدارة الوثائق"
             note="واجهة مؤسسية رسمية لمتابعة الأضابير والوثائق وسير المراجعة."
           />

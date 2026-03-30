@@ -16,7 +16,12 @@ from rest_framework_simplejwt.tokens import RefreshToken
 from rest_framework_simplejwt.token_blacklist.models import BlacklistedToken, OutstandingToken
 
 from core.models import AuditAction, AuditLog, Document, DocumentStatus, DocumentType, Dossier, Governorate, User, UserRole
-from core.reference_data import get_core_document_type_entries, sync_core_document_types
+from core.reference_data import (
+    get_core_document_type_entries,
+    get_core_governorate_entries,
+    sync_core_document_types,
+    sync_core_governorates,
+)
 
 
 class TemporaryMediaRootMixin:
@@ -234,7 +239,7 @@ class AuthAndLookupApiTests(APITestCase):
         )
         self.client.force_authenticate(user=self.user)
 
-        Governorate.objects.create(name="Damascus", is_active=True)
+        self.core_governorate = Governorate.objects.filter(is_active=True).order_by("name", "id").first()
         Governorate.objects.create(name="Inactive Gov", is_active=False)
         self.active_type = DocumentType.objects.get(slug="appointment")
         self.inactive_type = DocumentType.objects.create(
@@ -267,8 +272,9 @@ class AuthAndLookupApiTests(APITestCase):
         self.client.force_authenticate(user=self.user)
         response = self.client.get("/api/governorates/")
         self.assertEqual(response.status_code, status.HTTP_200_OK)
-        self.assertEqual(len(response.data), 1)
-        self.assertEqual(response.data[0]["name"], "Damascus")
+        returned_names = [item["name"] for item in response.data]
+        self.assertIn(self.core_governorate.name, returned_names)
+        self.assertNotIn("Inactive Gov", returned_names)
 
     def test_document_types_lookup_returns_active_only(self):
         response = self.client.get("/api/document-types/")
@@ -1085,6 +1091,65 @@ class AdminDashboardEmptyStateApiTests(APITestCase):
         self.assertEqual(response.data["recent_activity"]["latest_audit_log_events"], [])
 
 
+class EmergencySuperAdminVisibilityTests(APITestCase):
+    def setUp(self):
+        self.admin = User.objects.create_user(
+            username="ops_admin",
+            password="pass12345",
+            role=UserRole.ADMIN,
+        )
+        self.super_admin = User.objects.create_user(
+            username="super_admin",
+            password="pass12345",
+            role=UserRole.ADMIN,
+            is_superuser=True,
+            is_staff=True,
+        )
+        self.super_admin_audit_log = AuditLog.objects.create(
+            user=self.super_admin,
+            action=AuditAction.UPDATE,
+            entity_type="user",
+            entity_id=self.super_admin.id,
+            old_values={"role": UserRole.ADMIN},
+            new_values={"role": UserRole.ADMIN},
+        )
+        self.client.force_authenticate(user=self.admin)
+
+    def test_super_admin_is_hidden_from_user_management_list_and_detail(self):
+        list_response = self.client.get("/api/users/")
+        detail_response = self.client.get(f"/api/users/{self.super_admin.id}/")
+
+        self.assertEqual(list_response.status_code, status.HTTP_200_OK)
+        self.assertEqual(list_response.data["count"], 1)
+        self.assertEqual([item["username"] for item in list_response.data["results"]], ["ops_admin"])
+        self.assertEqual(detail_response.status_code, status.HTTP_404_NOT_FOUND)
+
+    def test_super_admin_is_excluded_from_dashboard_counts_and_recent_activity(self):
+        response = self.client.get("/api/admin/dashboard/")
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response.data["summary"]["total_active_users"], 1)
+        self.assertEqual(response.data["user_activity"]["total_active_users"], 1)
+        self.assertEqual(response.data["recent_activity"]["latest_audit_log_events"], [])
+
+    def test_super_admin_audit_logs_are_hidden_from_regular_audit_log_views(self):
+        list_response = self.client.get("/api/audit-logs/")
+        detail_response = self.client.get(f"/api/audit-logs/{self.super_admin_audit_log.id}/")
+
+        self.assertEqual(list_response.status_code, status.HTTP_200_OK)
+        self.assertEqual(list_response.data["count"], 0)
+        self.assertEqual(detail_response.status_code, status.HTTP_404_NOT_FOUND)
+
+    def test_super_admin_still_has_emergency_login_access(self):
+        self.client.force_authenticate(user=self.super_admin)
+
+        response = self.client.get("/api/auth/me/")
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response.data["username"], "super_admin")
+        self.assertEqual(response.data["role"], UserRole.ADMIN)
+
+
 class DocumentWorkflowApiTests(APITestCase):
     def setUp(self):
         self.admin = User.objects.create_user(username="admin", password="pass12345", role=UserRole.ADMIN)
@@ -1462,8 +1527,9 @@ class DossierListQueryApiTests(APITestCase):
         self.other_data_entry.assigned_auditor = self.other_auditor
         self.other_data_entry.save()
 
-        self.g1 = Governorate.objects.create(name="Damascus", is_active=True)
-        self.g2 = Governorate.objects.create(name="Homs", is_active=True)
+        governorates = list(Governorate.objects.filter(is_active=True).order_by("name", "id")[:2])
+        self.g1 = governorates[0]
+        self.g2 = governorates[1]
         self.doc_type = DocumentType.objects.create(
             name="Dossier Query Doc",
             slug="dossier-query-doc",
@@ -2926,6 +2992,53 @@ class CoreDocumentTypeBootstrapTests(APITestCase):
 
     def test_public_document_types_api_is_not_empty_after_initialization(self):
         response = self.client.get("/api/document-types/")
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertGreater(len(response.data), 0)
+        returned_names = {item["name"] for item in response.data}
+        self.assertIn(self.core_entries[0]["name"], returned_names)
+
+
+class CoreGovernorateBootstrapTests(APITestCase):
+    def setUp(self):
+        self.admin = User.objects.create_user(
+            username="bootstrap_gov_admin",
+            password="pass12345",
+            role=UserRole.ADMIN,
+        )
+        self.client.force_authenticate(user=self.admin)
+        self.core_entries = get_core_governorate_entries()
+
+    def test_core_governorates_exist_after_database_initialization(self):
+        self.assertEqual(
+            Governorate.objects.filter(name__in=[entry["name"] for entry in self.core_entries]).count(),
+            len(self.core_entries),
+        )
+
+    def test_sync_recreates_missing_governorate(self):
+        missing_entry = self.core_entries[0]
+        Governorate.objects.filter(name=missing_entry["name"]).delete()
+
+        result = sync_core_governorates()
+
+        recreated = Governorate.objects.get(name=missing_entry["name"])
+        self.assertEqual(result["created"], 1)
+        self.assertEqual(recreated.name, missing_entry["name"])
+        self.assertTrue(recreated.is_active)
+
+    def test_sync_does_not_duplicate_existing_governorates(self):
+        count_before = Governorate.objects.filter(name__in=[entry["name"] for entry in self.core_entries]).count()
+
+        result = sync_core_governorates()
+
+        count_after = Governorate.objects.filter(name__in=[entry["name"] for entry in self.core_entries]).count()
+        self.assertEqual(count_before, len(self.core_entries))
+        self.assertEqual(count_after, count_before)
+        self.assertEqual(result["created"], 0)
+        self.assertEqual(result["updated"], len(self.core_entries))
+
+    def test_public_governorates_api_is_not_empty_after_initialization(self):
+        response = self.client.get("/api/governorates/")
 
         self.assertEqual(response.status_code, status.HTTP_200_OK)
         self.assertGreater(len(response.data), 0)

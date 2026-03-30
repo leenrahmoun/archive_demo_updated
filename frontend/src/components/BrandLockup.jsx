@@ -2,7 +2,7 @@ import ministryLogo from "../assets/logo/ministry-logo.svg";
 
 export function BrandLockup({
   className = "",
-  title = "وزارة التطوير الإداري",
+  title = "وزارة التنمية الإدارية",
   subtitle = "نظام الأرشفة وإدارة الوثائق",
   note = "",
   compact = false,
@@ -13,7 +13,7 @@ export function BrandLockup({
       className={`brand-lockup${compact ? " brand-lockup--compact" : ""}${inverse ? " brand-lockup--inverse" : ""} ${className}`.trim()}
     >
       <div className="brand-lockup__logo-shell">
-        <img src={ministryLogo} alt="شعار وزارة التطوير الإداري" className="brand-lockup__logo" />
+        <img src={ministryLogo} alt="شعار وزارة التنمية الإدارية" className="brand-lockup__logo" />
       </div>
       <div className="brand-lockup__copy">
         <strong>{title}</strong>

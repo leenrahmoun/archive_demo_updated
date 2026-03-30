@@ -15,7 +15,6 @@ export function DossierListPage() {
   const [filters, setFilters] = useState({
     search: "",
     governorate: "",
-    is_deleted: "",
   });
   const [page, setPage] = useState(1);
   const [data, setData] = useState({ count: 0, results: [], next: null, previous: null });
@@ -77,18 +76,6 @@ export function DossierListPage() {
               {gov.name}
             </option>
           ))}
-        </select>
-        <select
-          value={filters.is_deleted}
-          onChange={(event) => {
-            setIsLoading(true);
-            setPage(1);
-            setFilters((prev) => ({ ...prev, is_deleted: event.target.value }));
-          }}
-        >
-          <option value="">الكل</option>
-          <option value="false">غير مؤرشفة</option>
-          <option value="true">مؤرشفة</option>
         </select>
       </FilterSection>
 

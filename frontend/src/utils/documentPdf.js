@@ -61,6 +61,8 @@ function renderPdfWindowMarkup({ title, bodyContent, accentColor = "#1d4ed8" }) 
       .print-card {
         height: calc(100vh - 7.5rem);
         min-height: 620px;
+        display: flex;
+        flex-direction: column;
         background: #ffffff;
         border: 1px solid #d8e1ef;
         border-radius: 14px;
@@ -68,7 +70,8 @@ function renderPdfWindowMarkup({ title, bodyContent, accentColor = "#1d4ed8" }) 
         box-shadow: 0 10px 24px rgba(12, 34, 64, 0.08);
       }
 
-      .print-status {
+      .print-status,
+      .print-toolbar {
         display: flex;
         gap: 0.75rem;
         align-items: center;
@@ -79,6 +82,10 @@ function renderPdfWindowMarkup({ title, bodyContent, accentColor = "#1d4ed8" }) 
 
       .print-status strong {
         color: ${accentColor};
+      }
+
+      .print-toolbar {
+        justify-content: flex-end;
       }
 
       .print-actions {
@@ -106,7 +113,8 @@ function renderPdfWindowMarkup({ title, bodyContent, accentColor = "#1d4ed8" }) 
 
       .print-frame {
         width: 100%;
-        height: calc(100% - 68px);
+        flex: 1 1 auto;
+        min-height: 0;
         border: 0;
         background: #ffffff;
       }
@@ -129,7 +137,8 @@ function renderPdfWindowMarkup({ title, bodyContent, accentColor = "#1d4ed8" }) 
 
       @media print {
         .print-header,
-        .print-status {
+        .print-status,
+        .print-toolbar {
           display: none;
         }
 
@@ -241,8 +250,7 @@ export async function startPdfReadingSession({ documentTitle, loadPdfBlob }) {
         title,
         bodyContent: `
           <section class="loading-card">
-            <h1>${escapeHtml(title)}</h1>
-            <p>يتم تجهيز صفحة قراءة مستقلة لملف PDF الآن. ستظهر النسخة الكاملة داخل هذه الصفحة بعد اكتمال التحميل.</p>
+            <strong>جارٍ تحميل ملف PDF...</strong>
           </section>
         `,
       })
@@ -263,17 +271,9 @@ export async function startPdfReadingSession({ documentTitle, loadPdfBlob }) {
         title,
         bodyContent: `
           <section class="print-shell">
-            <header class="print-header">
-              <h1>${escapeHtml(title)}</h1>
-              <p>هذه صفحة قراءة مستقلة للملف. يمكنك إبقاؤها مفتوحة للقراءة المطولة أو استخدام زر الطباعة عند الحاجة.</p>
-            </header>
             <main class="print-main">
-              <section class="print-card">
-                <div class="print-status">
-                  <div>
-                    <strong>جاهز للقراءة</strong>
-                    <p id="reader-status-text">يتم فتح ملف PDF داخل هذه الصفحة الآن.</p>
-                  </div>
+              <section class="print-card print-card--reader">
+                <div class="print-toolbar">
                   <div class="print-actions">
                     <button id="reader-print-button" type="button" class="print-button print-button--primary">طباعة الملف</button>
                     <button id="close-window-button" type="button" class="print-button">إغلاق الصفحة</button>
@@ -290,17 +290,11 @@ export async function startPdfReadingSession({ documentTitle, loadPdfBlob }) {
           </section>
           <script>
             (() => {
-              const statusText = document.getElementById("reader-status-text");
               const printButton = document.getElementById("reader-print-button");
               const closeButton = document.getElementById("close-window-button");
               const frame = document.getElementById("pdf-reader-frame");
 
-              frame.addEventListener("load", () => {
-                statusText.textContent = "تم تحميل ملف PDF بنجاح. يمكنك القراءة داخل هذه الصفحة أو طباعته عند الحاجة.";
-              }, { once: true });
-
               printButton.addEventListener("click", () => {
-                statusText.textContent = "يتم تجهيز نافذة الطباعة من هذه الصفحة.";
                 try {
                   frame.contentWindow.focus();
                   frame.contentWindow.print();
@@ -308,9 +302,7 @@ export async function startPdfReadingSession({ documentTitle, loadPdfBlob }) {
                   try {
                     window.focus();
                     window.print();
-                  } catch (printError) {
-                    statusText.textContent = "تعذر فتح نافذة الطباعة تلقائيًا. يمكنك استخدام أمر الطباعة من المتصفح.";
-                  }
+                  } catch {}
                 }
               });
 
@@ -460,7 +452,7 @@ export async function startPdfPrintSession({ documentTitle, loadPdfBlob }) {
                     try {
                       window.focus();
                       window.print();
-                    } catch (printError) {
+                    } catch {
                       statusText.textContent = "تعذر فتح نافذة الطباعة تلقائيًا. يمكنك استخدام أمر الطباعة من المتصفح.";
                     }
                   }

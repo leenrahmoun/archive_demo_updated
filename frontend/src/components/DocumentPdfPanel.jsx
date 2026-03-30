@@ -7,7 +7,7 @@ import {
 } from "../utils/documentPdf";
 import { AlertMessage } from "./AlertMessage";
 
-export function DocumentPdfPanel({ document, title, helperText, refreshKey }) {
+export function DocumentPdfPanel({ document, title, refreshKey }) {
   const previewRequestRef = useRef(0);
   const previewUrlRef = useRef("");
   const printSessionRef = useRef(null);
@@ -190,7 +190,6 @@ export function DocumentPdfPanel({ document, title, helperText, refreshKey }) {
       <div className="document-file-card__header">
         <div>
           <h3>{title}</h3>
-          <p className="muted">{helperText}</p>
         </div>
         <div className="document-file-card__actions">
           <button

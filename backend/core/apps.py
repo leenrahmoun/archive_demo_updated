@@ -7,10 +7,10 @@ class CoreConfig(AppConfig):
     name = "core"
 
     def ready(self):
-        from core.signals import bootstrap_core_document_types
+        from core.signals import bootstrap_core_reference_data
 
         post_migrate.connect(
-            bootstrap_core_document_types,
+            bootstrap_core_reference_data,
             sender=self,
-            dispatch_uid="core.bootstrap_core_document_types",
+            dispatch_uid="core.bootstrap_core_reference_data",
         )

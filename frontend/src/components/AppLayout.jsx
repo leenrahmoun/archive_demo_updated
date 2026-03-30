@@ -29,8 +29,7 @@ export function AppLayout() {
       <aside className="sidebar">
         <div className="sidebar__heading">
           <span className="sidebar__eyebrow">منصة وزارية داخلية</span>
-          <h1>نظام الأرشفة والوثائق</h1>
-          <p>إدارة مؤسسية للأضابير والوثائق وسير المراجعة بواجهة عربية رسمية وواضحة.</p>
+          <h1>نظام الأرشفة الوثائق</h1>
         </div>
 
         <nav className="sidebar__nav">
@@ -41,7 +40,7 @@ export function AppLayout() {
           {canViewAudit ? <NavLink to="/audit-logs">سجل التدقيق</NavLink> : null}
           {canManageUsers ? <NavLink to="/admin/users">إدارة المستخدمين</NavLink> : null}
           {canManageDocumentTypes ? <NavLink to="/admin/document-types">إدارة أنواع الوثائق</NavLink> : null}
-          {canCreate ? <NavLink to="/dossiers/new">إنشاء أضبارة</NavLink> : null}
+          {canCreate ? <NavLink to="/dossiers/new">إنشاء إضبارة</NavLink> : null}
         </nav>
 
         <div className="sidebar__footer">
@@ -55,20 +54,15 @@ export function AppLayout() {
         <header className="topbar">
           <div className="topbar__identity" aria-label="الهوية المؤسسية للنظام">
             <div className="topbar__logo-shell">
-              <img src={ministryLogo} alt="شعار وزارة التطوير الإداري" className="topbar__logo" />
+              <img src={ministryLogo} alt="شعار وزارة التنمية الإدارية" className="topbar__logo" />
             </div>
             <div className="topbar__identity-copy">
               <strong>منصة الأرشفة المؤسسية</strong>
-              <span>إدارة الوثائق والأضابير ومسارات المراجعة اليومية</span>
+              <span className="topbar__identity-subtitle">إدارة الوثائق والأضابير ومسارات المراجعة اليومية</span>
             </div>
           </div>
 
           <div className="topbar__meta">
-            <div className="topbar__user-card">
-              <strong>{user?.username}</strong>
-              <span>{roleLabel}</span>
-            </div>
-
             <div className="topbar-actions">
               {canViewAdminDashboard ? (
                 <Link to="/admin/dashboard" className="topbar__link topbar__link--accent">
@@ -81,11 +75,10 @@ export function AppLayout() {
               <Link to="/documents" className="topbar__link">
                 الوثائق
               </Link>
-              {canViewReviewQueue ? (
-                <Link to="/review-queue" className="topbar__link">
-                  قائمة المراجعة
-                </Link>
-              ) : null}
+              <div className="topbar__user-card">
+                <strong>{user?.username}</strong>
+                <span>{roleLabel}</span>
+              </div>
               <button type="button" className="btn-danger topbar__logout" onClick={logout}>
                 تسجيل الخروج
               </button>

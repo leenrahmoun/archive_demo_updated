@@ -729,8 +729,6 @@ export function AdminDashboardPage() {
     { label: "المستخدمون النشطون", value: summary.total_active_users, tone: "success", helperText: "الحسابات العاملة حاليًا ضمن النظام." },
   ];
 
-  const activeDashboardSectionMeta =
-    DASHBOARD_MAIN_SECTIONS.find((section) => section.value === activeDashboardSection) || DASHBOARD_MAIN_SECTIONS[0];
   const activeOperationalSectionMeta =
     DASHBOARD_OPERATIONAL_SECTIONS.find((section) => section.value === activeOperationalSection) ||
     DASHBOARD_OPERATIONAL_SECTIONS[0];
@@ -739,7 +737,6 @@ export function AdminDashboardPage() {
     <section className="dashboard-modern">
       <PageHeader
         title="لوحة الإدارة"
-        subtitle="لوحة تنفيذية حديثة تعرض حالة العمل، إنتاجية الموظفين، ضغط المدققين، وحركة الوثائق بواجهة عربية أوضح وأسهل للمتابعة."
       />
 
       {activeDashboardSection === "indicators" ? (
@@ -748,13 +745,12 @@ export function AdminDashboardPage() {
             <div className="dashboard-hero__brand">
               <BrandLockup
                 compact
-                title="وزارة التطوير الإداري"
-                subtitle="لوحة المتابعة التنفيذية"
+                title="وزارة التنمية الإدارية"
                 note="عرض مؤسسي سريع لحالة الوثائق والفريق."
               />
             </div>
             <span className="dashboard-hero__eyebrow">متابعة تنفيذية لحظية</span>
-            <h3>صورة واحدة للحمل الحالي، المخرجات، والاختناقات داخل دورة الأرشفة.</h3>
+            <h3>نظرة عامة على الحالة التنفيذية</h3>
             <p>
               يوجد الآن {formatCount(workflow.pending_review_documents)} وثيقة بانتظار المراجعة، و
               {formatCount(workflow.rejected_waiting_correction_documents)} وثيقة تحتاج تصحيحًا، بينما تم
@@ -806,8 +802,7 @@ export function AdminDashboardPage() {
         <div className="dashboard-section-shell__head">
           <div className="dashboard-section-shell__copy">
             <span className="dashboard-section-shell__eyebrow">أقسام لوحة الإدارة</span>
-            <h3>{activeDashboardSectionMeta.label}</h3>
-            <p>{activeDashboardSectionMeta.description}</p>
+            <p>اختر أحد الأقسام التالية لعرض التفاصيل</p>
           </div>
 
           <DashboardTabBar

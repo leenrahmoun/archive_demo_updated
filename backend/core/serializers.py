@@ -22,6 +22,7 @@ from core.services.document_storage_service import (
     validate_uploaded_pdf,
 )
 from core.services.dossier_service import DossierCreationError, create_dossier_with_first_document
+from core.user_visibility import get_operational_user_queryset
 
 User = get_user_model()
 
@@ -51,7 +52,7 @@ class MinimalUserSerializer(serializers.ModelSerializer):
 class MeSerializer(serializers.ModelSerializer):
     assigned_auditor_id = serializers.PrimaryKeyRelatedField(
         source="assigned_auditor",
-        queryset=User.objects.filter(role=UserRole.AUDITOR),
+        queryset=get_operational_user_queryset().filter(role=UserRole.AUDITOR),
         required=False,
         allow_null=True,
     )
@@ -67,7 +68,7 @@ class UserManagementSerializer(serializers.ModelSerializer):
     assigned_auditor = MinimalUserSerializer(read_only=True)
     assigned_auditor_id = serializers.PrimaryKeyRelatedField(
         source="assigned_auditor",
-        queryset=User.objects.filter(role=UserRole.AUDITOR),
+        queryset=get_operational_user_queryset().filter(role=UserRole.AUDITOR),
         required=False,
         allow_null=True,
     )
