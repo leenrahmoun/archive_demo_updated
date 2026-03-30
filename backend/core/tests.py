@@ -1132,13 +1132,71 @@ class EmergencySuperAdminVisibilityTests(APITestCase):
         self.assertEqual(response.data["user_activity"]["total_active_users"], 1)
         self.assertEqual(response.data["recent_activity"]["latest_audit_log_events"], [])
 
-    def test_super_admin_audit_logs_are_hidden_from_regular_audit_log_views(self):
+    def test_super_admin_user_account_audit_logs_are_hidden_from_regular_audit_log_views(self):
         list_response = self.client.get("/api/audit-logs/")
         detail_response = self.client.get(f"/api/audit-logs/{self.super_admin_audit_log.id}/")
 
         self.assertEqual(list_response.status_code, status.HTTP_200_OK)
         self.assertEqual(list_response.data["count"], 0)
         self.assertEqual(detail_response.status_code, status.HTTP_404_NOT_FOUND)
+
+    def test_super_admin_document_restore_audit_logs_remain_visible(self):
+        data_entry = User.objects.create_user(
+            username="ops_entry",
+            password="pass12345",
+            role=UserRole.DATA_ENTRY,
+        )
+        doc_type = DocumentType.objects.create(
+            name="Emergency Audit Type",
+            slug="emergency-audit-type",
+            group_name="audit",
+            display_order=1,
+            is_active=True,
+        )
+        dossier = Dossier.objects.create(
+            file_number="OPS-001",
+            full_name="Operational Dossier",
+            national_id="1234567890",
+            personal_id="123456",
+            room_number="1",
+            column_number="1",
+            shelf_number="1",
+            created_by=data_entry,
+        )
+        deleted_document = Document.objects.create(
+            dossier=dossier,
+            doc_type=doc_type,
+            doc_number="OPS-DOC-1",
+            doc_name="Restorable Emergency Document",
+            file_path="archive/emergency-restore.pdf",
+            file_size_kb=100,
+            mime_type="application/pdf",
+            status=DocumentStatus.DRAFT,
+            created_by=data_entry,
+            is_deleted=True,
+            deleted_by=self.admin,
+            deleted_at=timezone.now(),
+        )
+        self.client.force_authenticate(user=self.super_admin)
+        restore_response = self.client.post(f"/api/documents/{deleted_document.id}/restore/", {}, format="json")
+        self.assertEqual(restore_response.status_code, status.HTTP_200_OK)
+
+        restore_log = AuditLog.objects.get(action=AuditAction.RESTORE, entity_id=deleted_document.id)
+
+        self.client.force_authenticate(user=self.admin)
+        list_response = self.client.get("/api/audit-logs/?action=restore")
+        detail_response = self.client.get(f"/api/audit-logs/{restore_log.id}/")
+
+        self.assertEqual(list_response.status_code, status.HTTP_200_OK)
+        self.assertEqual(list_response.data["count"], 1)
+        self.assertEqual(list_response.data["results"][0]["id"], restore_log.id)
+        self.assertEqual(list_response.data["results"][0]["action_label"], "استعادة")
+        self.assertIn("أُعيدت إلى القوائم النشطة", list_response.data["results"][0]["change_summary"])
+
+        self.assertEqual(detail_response.status_code, status.HTTP_200_OK)
+        self.assertEqual(detail_response.data["id"], restore_log.id)
+        self.assertEqual(detail_response.data["action"], AuditAction.RESTORE)
+        self.assertEqual(detail_response.data["actor"]["username"], "super_admin")
 
     def test_super_admin_still_has_emergency_login_access(self):
         self.client.force_authenticate(user=self.super_admin)
@@ -1259,9 +1317,48 @@ class DocumentWorkflowApiTests(APITestCase):
         self.assertTrue(Document.objects.filter(id=self.document.id).exists())
         self.assertTrue(AuditLog.objects.filter(action=AuditAction.DELETE, entity_id=self.document.id).exists())
 
+    def test_admin_can_restore_deleted_document(self):
+        self.document.is_deleted = True
+        self.document.deleted_by = self.admin
+        self.document.deleted_at = timezone.now()
+        self.document.save(update_fields=["is_deleted", "deleted_by", "deleted_at", "updated_at"])
+
+        self.client.force_authenticate(user=self.admin)
+        response = self.client.post(f"/api/documents/{self.document.id}/restore/", {}, format="json")
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.document.refresh_from_db()
+        self.assertFalse(self.document.is_deleted)
+        self.assertIsNone(self.document.deleted_by)
+        self.assertIsNone(self.document.deleted_at)
+        audit_log = AuditLog.objects.get(action=AuditAction.RESTORE, entity_id=self.document.id)
+        self.assertTrue(audit_log.old_values["is_deleted"])
+        self.assertFalse(audit_log.new_values["is_deleted"])
+
+    def test_data_entry_can_restore_own_deleted_document(self):
+        self.document.is_deleted = True
+        self.document.deleted_by = self.admin
+        self.document.deleted_at = timezone.now()
+        self.document.save(update_fields=["is_deleted", "deleted_by", "deleted_at", "updated_at"])
+
+        self.client.force_authenticate(user=self.data_entry)
+        response = self.client.post(f"/api/documents/{self.document.id}/restore/", {}, format="json")
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.document.refresh_from_db()
+        self.assertFalse(self.document.is_deleted)
+
     def test_permissions_reader_cannot_call_workflow_actions(self):
         self.client.force_authenticate(user=self.reader)
         response = self.client.post(f"/api/documents/{self.document.id}/submit/", {}, format="json")
+        self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
+
+    def test_reader_cannot_restore_deleted_document(self):
+        self.document.is_deleted = True
+        self.document.deleted_by = self.admin
+        self.document.deleted_at = timezone.now()
+        self.document.save(update_fields=["is_deleted", "deleted_by", "deleted_at", "updated_at"])
+
+        self.client.force_authenticate(user=self.reader)
+        response = self.client.post(f"/api/documents/{self.document.id}/restore/", {}, format="json")
         self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
 
     def test_resubmit_rejected_document_returns_to_pending(self):
@@ -1512,6 +1609,37 @@ class AuditLogApiTests(APITestCase):
         denied = self.client.get(f"/api/audit-logs/{self.log2.id}/")
         self.assertEqual(denied.status_code, status.HTTP_403_FORBIDDEN)
 
+    def test_restore_audit_log_is_visible_with_human_readable_summary(self):
+        restore_log = AuditLog.objects.create(
+            user=self.admin,
+            action=AuditAction.RESTORE,
+            entity_type="document",
+            entity_id=self.document.id,
+            old_values={"is_deleted": True, "deleted_by": self.admin.id, "deleted_at": timezone.now().isoformat()},
+            new_values={"is_deleted": False, "deleted_by": None, "deleted_at": None},
+        )
+
+        self.client.force_authenticate(user=self.admin)
+
+        list_response = self.client.get("/api/audit-logs/?action=restore")
+        self.assertEqual(list_response.status_code, status.HTTP_200_OK)
+        self.assertEqual(list_response.data["count"], 1)
+        self.assertEqual(list_response.data["results"][0]["id"], restore_log.id)
+        self.assertEqual(list_response.data["results"][0]["action_label"], "استعادة")
+        self.assertIn("أُعيدت إلى القوائم النشطة", list_response.data["results"][0]["change_summary"])
+        self.assertEqual(
+            list_response.data["results"][0]["related_users"][str(self.admin.id)]["username"],
+            "admin_audit",
+        )
+
+        detail_response = self.client.get(f"/api/audit-logs/{restore_log.id}/")
+        self.assertEqual(detail_response.status_code, status.HTTP_200_OK)
+        self.assertEqual(detail_response.data["action"], AuditAction.RESTORE)
+        self.assertEqual(detail_response.data["action_label"], "استعادة")
+        self.assertTrue(detail_response.data["old_values"]["is_deleted"])
+        self.assertFalse(detail_response.data["new_values"]["is_deleted"])
+        self.assertEqual(detail_response.data["related_users"][str(self.admin.id)]["username"], "admin_audit")
+
 
 class DossierListQueryApiTests(APITestCase):
     def setUp(self):
@@ -1711,7 +1839,7 @@ class DossierListQueryApiTests(APITestCase):
 
     def test_dossier_combined_filters_stay_within_visibility_scope(self):
         self.client.force_authenticate(user=self.auditor)
-        response = self.client.get(f"/api/dossiers/?search=Approved&governorate={self.g2.id}&is_deleted=true")
+        response = self.client.get(f"/api/dossiers/?search=Approved&governorate={self.g2.id}&is_archived=true")
         self.assertEqual(response.status_code, status.HTTP_200_OK)
         self.assertEqual(response.data["count"], 1)
         self.assertEqual(response.data["results"][0]["id"], self.assigned_approved_archived_dossier.id)
@@ -1719,7 +1847,7 @@ class DossierListQueryApiTests(APITestCase):
     def test_empty_dossier_filters_are_ignored_safely(self):
         self.client.force_authenticate(user=self.admin)
         baseline = self.client.get("/api/dossiers/")
-        with_empty_values = self.client.get("/api/dossiers/?search=&governorate=&is_deleted=&created_by=")
+        with_empty_values = self.client.get("/api/dossiers/?search=&governorate=&is_archived=&created_by=")
         self.assertEqual(with_empty_values.status_code, status.HTTP_200_OK)
         self.assertEqual(with_empty_values.data["count"], baseline.data["count"])
 
@@ -2127,6 +2255,162 @@ class DocumentListQueryApiTests(APITestCase):
         response = self.client.get("/api/documents/?is_deleted=true")
         self.assertEqual(response.status_code, status.HTTP_200_OK)
         self.assertEqual(response.data["count"], 0)
+
+
+class DeletedDocumentListApiTests(APITestCase):
+    def setUp(self):
+        self.admin = User.objects.create_user(username="del_admin", password="pass12345", role=UserRole.ADMIN)
+        self.data_entry = User.objects.create_user(username="del_entry", password="pass12345", role=UserRole.DATA_ENTRY)
+        self.other_data_entry = User.objects.create_user(
+            username="del_entry_other",
+            password="pass12345",
+            role=UserRole.DATA_ENTRY,
+        )
+        self.auditor = User.objects.create_user(username="del_auditor", password="pass12345", role=UserRole.AUDITOR)
+        self.reader = User.objects.create_user(username="del_reader", password="pass12345", role=UserRole.READER)
+
+        self.doc_type = DocumentType.objects.create(
+            name="Deleted Visibility Doc",
+            slug="deleted-visibility-doc",
+            group_name="deleted",
+            display_order=1,
+            is_active=True,
+        )
+        self.dossier = Dossier.objects.create(
+            file_number="DEL-001",
+            full_name="Deleted Scope User",
+            national_id="DEL-N1",
+            personal_id="DEL-P1",
+            room_number="1",
+            column_number="1",
+            shelf_number="1",
+            created_by=self.data_entry,
+        )
+
+        self.deleted_owned = Document.objects.create(
+            dossier=self.dossier,
+            doc_type=self.doc_type,
+            doc_number="DEL-OWNED",
+            doc_name="Deleted Owned",
+            file_path="archive/del-owned.pdf",
+            file_size_kb=120,
+            mime_type="application/pdf",
+            status=DocumentStatus.REJECTED,
+            rejection_reason="سبب رفض قبل الحذف",
+            created_by=self.data_entry,
+            is_deleted=True,
+            deleted_by=self.admin,
+            deleted_at=timezone.now(),
+        )
+        self.deleted_other = Document.objects.create(
+            dossier=self.dossier,
+            doc_type=self.doc_type,
+            doc_number="DEL-OTHER",
+            doc_name="Deleted Other",
+            file_path="archive/del-other.pdf",
+            file_size_kb=120,
+            mime_type="application/pdf",
+            status=DocumentStatus.DRAFT,
+            created_by=self.other_data_entry,
+            is_deleted=True,
+            deleted_by=self.other_data_entry,
+            deleted_at=timezone.now(),
+        )
+        self.active_document = Document.objects.create(
+            dossier=self.dossier,
+            doc_type=self.doc_type,
+            doc_number="DEL-ACTIVE",
+            doc_name="Still Active",
+            file_path="archive/del-active.pdf",
+            file_size_kb=120,
+            mime_type="application/pdf",
+            status=DocumentStatus.PENDING,
+            created_by=self.data_entry,
+        )
+
+    def test_admin_can_list_only_deleted_documents(self):
+        self.client.force_authenticate(user=self.admin)
+        response = self.client.get("/api/documents/deleted/")
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        returned_ids = {item["id"] for item in response.data["results"]}
+        self.assertEqual(returned_ids, {self.deleted_owned.id, self.deleted_other.id})
+        deleted_row = next(item for item in response.data["results"] if item["id"] == self.deleted_owned.id)
+        self.assertEqual(deleted_row["deleted_by_name"], self.admin.username)
+        self.assertIsNotNone(deleted_row["deleted_at"])
+
+    def test_data_entry_sees_only_their_deleted_documents(self):
+        self.client.force_authenticate(user=self.data_entry)
+        response = self.client.get("/api/documents/deleted/")
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response.data["count"], 1)
+        self.assertEqual(response.data["results"][0]["id"], self.deleted_owned.id)
+
+    def test_admin_can_filter_deleted_documents_by_deleted_by(self):
+        self.client.force_authenticate(user=self.admin)
+        response = self.client.get(f"/api/documents/deleted/?deleted_by={self.other_data_entry.username}")
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response.data["count"], 1)
+        self.assertEqual(response.data["results"][0]["id"], self.deleted_other.id)
+
+    def test_admin_can_open_deleted_document_detail_with_include_deleted_flag(self):
+        self.client.force_authenticate(user=self.admin)
+        response = self.client.get(f"/api/documents/{self.deleted_owned.id}/?include_deleted=true")
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response.data["id"], self.deleted_owned.id)
+        self.assertTrue(response.data["is_deleted"])
+        self.assertEqual(response.data["deleted_by_name"], self.admin.username)
+
+    def test_data_entry_can_open_own_deleted_document_detail_with_include_deleted_flag(self):
+        self.client.force_authenticate(user=self.data_entry)
+        response = self.client.get(f"/api/documents/{self.deleted_owned.id}/?include_deleted=true")
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response.data["id"], self.deleted_owned.id)
+        self.assertTrue(response.data["is_deleted"])
+
+    def test_deleted_document_detail_requires_include_deleted_flag(self):
+        self.client.force_authenticate(user=self.admin)
+        response = self.client.get(f"/api/documents/{self.deleted_owned.id}/")
+        self.assertEqual(response.status_code, status.HTTP_404_NOT_FOUND)
+
+    def test_data_entry_cannot_open_another_users_deleted_document_detail(self):
+        self.client.force_authenticate(user=self.data_entry)
+        response = self.client.get(f"/api/documents/{self.deleted_other.id}/?include_deleted=true")
+        self.assertEqual(response.status_code, status.HTTP_404_NOT_FOUND)
+
+    def test_restore_moves_document_back_to_normal_visibility(self):
+        self.client.force_authenticate(user=self.admin)
+        restore_response = self.client.post(f"/api/documents/{self.deleted_owned.id}/restore/", {}, format="json")
+        self.assertEqual(restore_response.status_code, status.HTTP_200_OK)
+
+        active_response = self.client.get("/api/documents/")
+        self.assertEqual(active_response.status_code, status.HTTP_200_OK)
+        active_ids = {item["id"] for item in active_response.data["results"]}
+        self.assertIn(self.deleted_owned.id, active_ids)
+
+        deleted_response = self.client.get("/api/documents/deleted/")
+        self.assertEqual(deleted_response.status_code, status.HTTP_200_OK)
+        deleted_ids = {item["id"] for item in deleted_response.data["results"]}
+        self.assertNotIn(self.deleted_owned.id, deleted_ids)
+
+    def test_data_entry_cannot_restore_another_users_deleted_document(self):
+        self.client.force_authenticate(user=self.data_entry)
+        response = self.client.post(f"/api/documents/{self.deleted_other.id}/restore/", {}, format="json")
+        self.assertEqual(response.status_code, status.HTTP_404_NOT_FOUND)
+
+    def test_auditor_cannot_access_deleted_documents_endpoint(self):
+        self.client.force_authenticate(user=self.auditor)
+        response = self.client.get("/api/documents/deleted/")
+        self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
+
+    def test_auditor_cannot_restore_deleted_document(self):
+        self.client.force_authenticate(user=self.auditor)
+        response = self.client.post(f"/api/documents/{self.deleted_owned.id}/restore/", {}, format="json")
+        self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
+
+    def test_reader_cannot_access_deleted_documents_endpoint(self):
+        self.client.force_authenticate(user=self.reader)
+        response = self.client.get("/api/documents/deleted/")
+        self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
 
 
 class DocumentCreateUpdateApiTests(TemporaryMediaRootMixin, APITestCase):

@@ -6,6 +6,7 @@ import { PageHeader } from "../components/PageHeader";
 import { EmptyBlock, LoadingBlock } from "../components/StateBlock";
 import {
   AUDIT_ACTION_LABELS,
+  getSimpleAuditChangeDisplay,
   getAuditActionLabel,
   getAuditActorPrimary,
   getAuditActorSecondary,
@@ -15,6 +16,7 @@ import {
   getAuditRoleLabel,
   getAuditNarratives,
   normalizeAuditValue,
+  shouldUseSimpleAuditChange,
 } from "../utils/auditLogPresentation";
 import { formatDate } from "../utils/format";
 
@@ -112,6 +114,8 @@ function DetailFact({ label, value, subtext }) {
 }
 
 function ChangeCard({ entry }) {
+  const simpleDisplay = shouldUseSimpleAuditChange(entry) ? getSimpleAuditChangeDisplay(entry) : null;
+
   return (
     <article className={`audit-log-change-card audit-log-change-card--${entry.changeType}`}>
       <div className="audit-log-change-card__title">
@@ -121,16 +125,23 @@ function ChangeCard({ entry }) {
         </span>
       </div>
 
-      <div className="audit-log-change-card__grid">
-        <div className="audit-log-value-panel">
-          <span className="audit-log-value-panel__label">قبل</span>
-          <AuditValueContent value={entry.before} />
+      {simpleDisplay ? (
+        <div className="audit-log-value-panel audit-log-value-panel--single">
+          <span className="audit-log-value-panel__label">{simpleDisplay.label}</span>
+          <AuditValueContent value={simpleDisplay.value} />
         </div>
-        <div className="audit-log-value-panel audit-log-value-panel--after">
-          <span className="audit-log-value-panel__label">بعد</span>
-          <AuditValueContent value={entry.after} />
+      ) : (
+        <div className="audit-log-change-card__grid">
+          <div className="audit-log-value-panel">
+            <span className="audit-log-value-panel__label">قبل</span>
+            <AuditValueContent value={entry.before} />
+          </div>
+          <div className="audit-log-value-panel audit-log-value-panel--after">
+            <span className="audit-log-value-panel__label">بعد</span>
+            <AuditValueContent value={entry.after} />
+          </div>
         </div>
-      </div>
+      )}
     </article>
   );
 }
@@ -140,6 +151,7 @@ export function AuditLogDetailPage() {
   const [log, setLog] = useState(null);
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState("");
+  const relatedUsers = log?.related_users || {};
 
   useEffect(() => {
     getAuditLogById(id)
@@ -300,11 +312,11 @@ export function AuditLogDetailPage() {
             <div className="audit-log-change-card__grid">
               <div className="audit-log-value-panel">
                 <span className="audit-log-value-panel__label">القيم السابقة</span>
-                <AuditValueContent value={normalizeAuditValue("old_values", log.old_values)} />
+                <AuditValueContent value={normalizeAuditValue("old_values", log.old_values, { relatedUsers })} />
               </div>
               <div className="audit-log-value-panel audit-log-value-panel--after">
                 <span className="audit-log-value-panel__label">القيم الحالية</span>
-                <AuditValueContent value={normalizeAuditValue("new_values", log.new_values)} />
+                <AuditValueContent value={normalizeAuditValue("new_values", log.new_values, { relatedUsers })} />
               </div>
             </div>
           </div>

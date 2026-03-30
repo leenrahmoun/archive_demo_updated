@@ -1,6 +1,7 @@
 """Document workflow actions for MVP."""
 
 from django.db import transaction
+from django.core.exceptions import ValidationError as DjangoValidationError
 from django.utils import timezone
 
 from core.models import AuditAction, Document, DocumentStatus, User, UserRole
@@ -9,6 +10,18 @@ from core.services.audit_log_service import create_audit_log
 
 class WorkflowError(ValueError):
     """Raised when workflow transition or permission is invalid."""
+
+
+def _validation_error_to_message(exc: DjangoValidationError) -> str:
+    if getattr(exc, "message_dict", None):
+        messages = []
+        for values in exc.message_dict.values():
+            messages.extend(str(value) for value in values)
+        if messages:
+            return messages[0]
+    if getattr(exc, "messages", None):
+        return str(exc.messages[0])
+    return "The requested workflow change is invalid."
 
 
 def _audit(user: User, action: str, document: Document, old_values: dict, new_values: dict) -> None:
@@ -140,6 +153,38 @@ def soft_delete_document(*, actor: User, document: Document) -> Document:
             "is_deleted": document.is_deleted,
             "deleted_by": document.deleted_by_id,
             "deleted_at": document.deleted_at.isoformat(),
+        },
+    )
+    return document
+
+
+@transaction.atomic
+def restore_document(*, actor: User, document: Document) -> Document:
+    if actor.role not in {UserRole.ADMIN, UserRole.DATA_ENTRY}:
+        raise WorkflowError("You do not have permission to restore documents.")
+    if not document.is_deleted:
+        raise WorkflowError("Document is not deleted.")
+    if actor.role == UserRole.DATA_ENTRY and document.created_by_id != actor.id:
+        raise WorkflowError("You do not have permission to restore this document.")
+
+    old_values = {"is_deleted": document.is_deleted, "deleted_by": document.deleted_by_id, "deleted_at": document.deleted_at}
+    document.is_deleted = False
+    document.deleted_by = None
+    document.deleted_at = None
+    try:
+        document.full_clean()
+    except DjangoValidationError as exc:
+        raise WorkflowError(_validation_error_to_message(exc)) from exc
+    document.save(update_fields=["is_deleted", "deleted_by", "deleted_at", "updated_at"])
+    _audit(
+        actor,
+        AuditAction.RESTORE,
+        document,
+        old_values,
+        {
+            "is_deleted": document.is_deleted,
+            "deleted_by": document.deleted_by_id,
+            "deleted_at": document.deleted_at,
         },
     )
     return document

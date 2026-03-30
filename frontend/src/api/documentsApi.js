@@ -5,8 +5,13 @@ export async function getDocuments(params) {
   return response.data;
 }
 
-export async function getDocumentById(id) {
-  const response = await api.get(`/api/documents/${id}/`);
+export async function getDeletedDocuments(params) {
+  const response = await api.get("/api/documents/deleted/", { params });
+  return response.data;
+}
+
+export async function getDocumentById(id, params) {
+  const response = await api.get(`/api/documents/${id}/`, { params });
   return response.data;
 }
 
@@ -41,6 +46,11 @@ export async function rejectDocument(id, rejection_reason) {
 
 export async function softDeleteDocument(id) {
   const response = await api.post(`/api/documents/${id}/soft-delete/`, {});
+  return response.data;
+}
+
+export async function restoreDocument(id) {
+  const response = await api.post(`/api/documents/${id}/restore/`, {});
   return response.data;
 }
 

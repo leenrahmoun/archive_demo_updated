@@ -400,7 +400,7 @@ function WorkflowOverviewCard({ workflow }) {
     <article className="card dashboard-panel">
       <SectionHeader
         title="وضع سير العمل"
-        description="بطاقة سريعة توضّح أين تتركز الوثائق المفتوحة وما الذي يحتاج متابعة إدارية أو تصحيحًا."
+        description="بطاقة توضّح أين تتركز الوثائق المفتوحة وما الذي يحتاج متابعة إدارية أو تصحيحًا."
       />
 
       <div className="dashboard-mini-stats-grid">

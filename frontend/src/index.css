@@ -918,6 +918,74 @@ button:disabled {
   color: var(--color-text-secondary);
 }
 
+.deleted-documents-page__summary {
+  margin: 0 0 0.9rem;
+}
+
+.deleted-documents-page__restore-actions {
+  display: flex;
+  justify-content: flex-start;
+  margin: -0.1rem 0 0.95rem;
+}
+
+.deleted-documents-page__view-link {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 88px;
+}
+
+.deleted-documents-page__deleted-at {
+  white-space: nowrap;
+}
+
+.deleted-documents-page__action-cell {
+  white-space: nowrap;
+}
+
+.deleted-document-state-card {
+  border: 1px solid rgba(191, 79, 74, 0.18);
+  border-right: 6px solid var(--color-danger);
+  background: linear-gradient(180deg, #fff8f7 0%, #ffffff 100%);
+  box-shadow: 0 14px 28px rgba(191, 79, 74, 0.08);
+}
+
+.deleted-document-state-card__header {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 1rem;
+  flex-wrap: wrap;
+}
+
+.deleted-document-state-card__title {
+  margin: 0 0 0.45rem;
+  color: #9d2f2b;
+  font-size: 1.15rem;
+}
+
+.deleted-document-state-card__helper {
+  margin: 0;
+  color: #805750;
+  line-height: 1.8;
+  max-width: 62ch;
+}
+
+.deleted-document-state-card__meta {
+  display: flex;
+  gap: 0.9rem 1.5rem;
+  flex-wrap: wrap;
+  margin-top: 1rem;
+  color: var(--color-text-secondary);
+}
+
+.deleted-document-state-card__actions {
+  display: flex;
+  gap: 0.75rem;
+  flex-wrap: wrap;
+  margin-top: 1rem;
+}
+
 .approval-origin-note {
   display: block;
   margin-top: 0.35rem;
@@ -1837,6 +1905,10 @@ textarea {
 
 .audit-log-value-panel--after {
   background: var(--color-surface-soft);
+}
+
+.audit-log-value-panel--single {
+  max-width: 28rem;
 }
 
 .audit-log-value-panel__label {

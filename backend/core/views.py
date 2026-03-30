@@ -20,6 +20,8 @@ from core.access import (
     apply_document_advanced_filters,
     apply_dossier_advanced_filters,
     get_audit_log_visibility_queryset,
+    get_deleted_document_visibility_queryset,
+    get_deleted_document_detail_queryset_for_user,
     get_document_detail_queryset_for_user,
     get_document_visibility_queryset,
     get_document_review_scope_queryset_for_user,
@@ -27,7 +29,14 @@ from core.access import (
     get_review_queue_queryset_for_user,
 )
 from core.models import AuditAction, AuditLog, Document, DocumentStatus, DocumentType, Dossier, Governorate, User, UserRole
-from core.permissions import AdminOnlyPermission, AuditLogPermission, DocumentPermission, DossierPermission, DocumentWorkflowPermission
+from core.permissions import (
+    AdminOnlyPermission,
+    AuditLogPermission,
+    DeletedDocumentPermission,
+    DocumentPermission,
+    DossierPermission,
+    DocumentWorkflowPermission,
+)
 from core.serializers import (
     AdminDashboardAdminReviewActivitySerializer,
     AdminDashboardAuditEventSerializer,
@@ -57,6 +66,7 @@ from core.services.document_workflow_service import (
     WorkflowError,
     approve_document,
     reject_document,
+    restore_document,
     soft_delete_document,
     submit_document,
 )
@@ -214,6 +224,25 @@ class DocumentListAPIView(generics.ListCreateAPIView):
         return apply_document_advanced_filters(queryset, self.request.query_params, self.request.user)
 
 
+class DeletedDocumentListAPIView(generics.ListAPIView):
+    permission_classes = [DeletedDocumentPermission]
+    serializer_class = DocumentSummarySerializer
+    pagination_class = StandardListPagination
+    filter_backends = [filters.OrderingFilter]
+    ordering_fields = ["status", "created_at", "reviewed_at", "deleted_at"]
+    ordering = ["-deleted_at", "-id"]
+
+    def get_queryset(self):
+        queryset = get_deleted_document_visibility_queryset(self.request.user).select_related(
+            "dossier",
+            "doc_type",
+            "created_by",
+            "reviewed_by",
+            "deleted_by",
+        )
+        return apply_document_advanced_filters(queryset, self.request.query_params, self.request.user, deleted_state=True)
+
+
 class DocumentRetrieveAPIView(generics.RetrieveUpdateAPIView):
     permission_classes = [DocumentPermission]
 
@@ -223,6 +252,9 @@ class DocumentRetrieveAPIView(generics.RetrieveUpdateAPIView):
         return DocumentSummarySerializer
 
     def get_queryset(self):
+        include_deleted = str(self.request.query_params.get("include_deleted", "")).lower() in {"1", "true", "yes"}
+        if self.request.method == "GET" and include_deleted:
+            return get_deleted_document_detail_queryset_for_user(self.request.user)
         return get_document_detail_queryset_for_user(self.request.user)
 
 
@@ -833,6 +865,22 @@ class DocumentSoftDeleteAPIView(APIView):
         document = generics.get_object_or_404(qs, pk=pk)
         try:
             document = soft_delete_document(actor=request.user, document=document)
+        except WorkflowError as exc:
+            return Response({"detail": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+        return Response(DocumentSummarySerializer(document).data, status=status.HTTP_200_OK)
+
+
+class DocumentRestoreAPIView(APIView):
+    permission_classes = [IsAuthenticated, DocumentWorkflowPermission]
+    workflow_action = "restore"
+
+    def post(self, request, pk, *args, **kwargs):
+        qs = Document.objects.filter(is_deleted=True)
+        if request.user.role == UserRole.DATA_ENTRY:
+            qs = qs.filter(created_by=request.user)
+        document = generics.get_object_or_404(qs, pk=pk)
+        try:
+            document = restore_document(actor=request.user, document=document)
         except WorkflowError as exc:
             return Response({"detail": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
         return Response(DocumentSummarySerializer(document).data, status=status.HTTP_200_OK)

@@ -50,7 +50,7 @@ class DocumentPermission(BasePermission):
 class DocumentWorkflowPermission(BasePermission):
     """
     Endpoint-level workflow permissions.
-    View must expose `workflow_action` in: submit, approve, reject, soft_delete.
+    View must expose `workflow_action` in: submit, approve, reject, soft_delete, restore.
     """
 
     def has_permission(self, request, view):
@@ -65,9 +65,21 @@ class DocumentWorkflowPermission(BasePermission):
             return user.role == UserRole.DATA_ENTRY
         if action in {"approve", "reject"}:
             return user.role == UserRole.AUDITOR
-        if action == "soft_delete":
+        if action in {"soft_delete", "restore"}:
             return user.role == UserRole.DATA_ENTRY
         return False
+
+
+class DeletedDocumentPermission(BasePermission):
+    """Read-only access to deleted documents for admin and data entry users."""
+
+    def has_permission(self, request, view):
+        user = request.user
+        if not user or not user.is_authenticated:
+            return False
+        if request.method not in SAFE_METHODS:
+            return False
+        return user.role in {UserRole.ADMIN, UserRole.DATA_ENTRY}
 
 
 class AuditLogPermission(BasePermission):

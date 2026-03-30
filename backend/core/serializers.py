@@ -390,6 +390,7 @@ class AuditLogSerializer(serializers.ModelSerializer):
     entity_display = serializers.SerializerMethodField()
     entity_reference = serializers.SerializerMethodField()
     change_summary = serializers.SerializerMethodField()
+    related_users = serializers.SerializerMethodField()
 
     class Meta:
         model = AuditLog
@@ -405,6 +406,7 @@ class AuditLogSerializer(serializers.ModelSerializer):
             "change_summary",
             "old_values",
             "new_values",
+            "related_users",
             "ip_address",
             "created_at",
             "actor",
@@ -493,6 +495,10 @@ class AuditLogSerializer(serializers.ModelSerializer):
         if entity_display:
             summary_parts.append(entity_display)
 
+        if obj.action == AuditAction.RESTORE and old_values.get("is_deleted") is True and new_values.get("is_deleted") is False:
+            summary_parts.append("أُعيدت إلى القوائم النشطة")
+            return " - ".join(summary_parts)
+
         message = new_values.get("message") or old_values.get("message")
         if isinstance(message, str) and message.strip():
             summary_parts.append(message.strip())
@@ -519,6 +525,30 @@ class AuditLogSerializer(serializers.ModelSerializer):
 
         return " - ".join(summary_parts)
 
+    def get_related_users(self, obj):
+        user_ids = set()
+
+        def collect_user_ids(value):
+            if isinstance(value, dict):
+                for key, nested_value in value.items():
+                    if key.endswith("_by") and isinstance(nested_value, int):
+                        user_ids.add(nested_value)
+                    else:
+                        collect_user_ids(nested_value)
+            elif isinstance(value, list):
+                for item in value:
+                    collect_user_ids(item)
+
+        collect_user_ids(obj.old_values or {})
+        collect_user_ids(obj.new_values or {})
+
+        if not user_ids:
+            return {}
+
+        users_by_id = {user.id: user for user in User.objects.filter(id__in=user_ids)}
+        serializer = AuditActorSerializer([users_by_id[user_id] for user_id in user_ids if user_id in users_by_id], many=True)
+        return {str(item["id"]): item for item in serializer.data}
+
 
 class DocumentSummarySerializer(serializers.ModelSerializer):
     is_approved_by_admin = serializers.SerializerMethodField()
@@ -529,6 +559,7 @@ class DocumentSummarySerializer(serializers.ModelSerializer):
     created_by_name = serializers.CharField(source="created_by.username", read_only=True)
     reviewed_by_name = serializers.CharField(source="reviewed_by.username", read_only=True)
     reviewed_by_role = serializers.CharField(source="reviewed_by.role", read_only=True)
+    deleted_by_name = serializers.CharField(source="deleted_by.username", read_only=True)
 
     class Meta:
         model = Document
@@ -558,6 +589,7 @@ class DocumentSummarySerializer(serializers.ModelSerializer):
             "rejection_reason",
             "is_deleted",
             "deleted_at",
+            "deleted_by_name",
             "is_approved_by_admin",
             "is_rejected_by_admin",
         )

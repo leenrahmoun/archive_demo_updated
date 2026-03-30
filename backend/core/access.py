@@ -217,16 +217,18 @@ def apply_audit_log_search(queryset, params):
     )
 
 
-def get_document_visibility_queryset(user):
+def get_document_visibility_queryset(user, *, deleted_state=False):
     if not user or not user.is_authenticated:
         return Document.objects.none()
 
-    queryset = Document.objects.filter(is_deleted=False)
+    queryset = Document.objects.filter(is_deleted=deleted_state)
 
     if user.role == UserRole.ADMIN:
         return queryset
     if user.role == UserRole.DATA_ENTRY:
         return queryset.filter(created_by=user)
+    if deleted_state:
+        return Document.objects.none()
     if user.role == UserRole.AUDITOR:
         return queryset.filter(
             created_by__assigned_auditor=user,
@@ -262,7 +264,7 @@ def get_dossier_visibility_queryset(user):
     return Dossier.objects.none()
 
 
-def apply_document_advanced_filters(queryset, params, user):
+def apply_document_advanced_filters(queryset, params, user, *, deleted_state=False):
     if params is None:
         return queryset
 
@@ -275,8 +277,11 @@ def apply_document_advanced_filters(queryset, params, user):
             | Q(dossier__file_number__icontains=search)
         )
 
-    is_deleted = _get_clean_param(params, "is_deleted")
-    if is_deleted and is_deleted.lower() in BOOLEAN_TRUE_VALUES:
+    deleted_filter = _get_clean_param(params, "is_deleted")
+    if deleted_state:
+        if deleted_filter and deleted_filter.lower() in BOOLEAN_FALSE_VALUES:
+            return queryset.none()
+    elif deleted_filter and deleted_filter.lower() in BOOLEAN_TRUE_VALUES:
         return queryset.none()
 
     status_value = _get_clean_param(params, "status")
@@ -305,6 +310,11 @@ def apply_document_advanced_filters(queryset, params, user):
         else:
             queryset = _filter_user_reference(queryset, "reviewed_by", reviewed_by)
 
+    if deleted_state:
+        deleted_by = _get_clean_param(params, "deleted_by")
+        if deleted_by:
+            queryset = _filter_user_reference(queryset, "deleted_by", deleted_by)
+
     return queryset
 
 
@@ -329,9 +339,9 @@ def apply_dossier_advanced_filters(queryset, params, user):
     if created_by:
         queryset = _filter_user_reference(queryset, "created_by", created_by)
 
-    is_deleted = _get_clean_param(params, "is_deleted")
-    if is_deleted:
-        lowered = is_deleted.lower()
+    archived_state = _get_clean_param(params, "is_archived") or _get_clean_param(params, "is_deleted")
+    if archived_state:
+        lowered = archived_state.lower()
         if lowered in BOOLEAN_TRUE_VALUES:
             queryset = queryset.filter(is_archived=True)
         elif lowered in BOOLEAN_FALSE_VALUES:
@@ -341,14 +351,19 @@ def apply_dossier_advanced_filters(queryset, params, user):
 
 
 def get_document_queryset_for_user(user, *, deleted_state=False):
-    queryset = get_document_visibility_queryset(user)
-    if deleted_state:
-        return queryset.none()
-    return queryset
+    return get_document_visibility_queryset(user, deleted_state=deleted_state)
 
 
-def get_document_detail_queryset_for_user(user):
-    return get_document_visibility_queryset(user)
+def get_document_detail_queryset_for_user(user, *, deleted_state=False):
+    return get_document_visibility_queryset(user, deleted_state=deleted_state)
+
+
+def get_deleted_document_visibility_queryset(user):
+    return get_document_visibility_queryset(user, deleted_state=True)
+
+
+def get_deleted_document_detail_queryset_for_user(user):
+    return get_document_detail_queryset_for_user(user, deleted_state=True)
 
 
 def get_document_review_scope_queryset_for_user(user):

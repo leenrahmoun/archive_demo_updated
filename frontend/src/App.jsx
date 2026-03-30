@@ -8,6 +8,7 @@ import { DossierListPage } from "./pages/DossierListPage";
 import { DossierDetailPage } from "./pages/DossierDetailPage";
 import { CreateDossierPage } from "./pages/CreateDossierPage";
 import { DocumentsListPage } from "./pages/DocumentsListPage";
+import { DeletedDocumentsPage } from "./pages/DeletedDocumentsPage";
 import { DocumentDetailPage } from "./pages/DocumentDetailPage";
 import { AuditLogListPage } from "./pages/AuditLogListPage";
 import { AuditLogDetailPage } from "./pages/AuditLogDetailPage";
@@ -65,6 +66,14 @@ export default function App() {
           }
         />
         <Route path="/documents" element={<DocumentsListPage />} />
+        <Route
+          path="/documents/deleted"
+          element={
+            <RoleGuard allowedRoles={["admin", "data_entry"]}>
+              <DeletedDocumentsPage />
+            </RoleGuard>
+          }
+        />
         <Route path="/documents/:id" element={<DocumentDetailPage />} />
         <Route
           path="/documents/:id/edit"

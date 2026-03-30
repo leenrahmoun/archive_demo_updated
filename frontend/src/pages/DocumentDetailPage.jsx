@@ -1,8 +1,9 @@
 import { useEffect, useRef, useState } from "react";
-import { Link, useLocation, useParams } from "react-router-dom";
+import { Link, useLocation, useNavigate, useParams } from "react-router-dom";
 import {
   getDocumentById,
   replaceDocumentPdf,
+  restoreDocument,
   submitDocument,
 } from "../api/documentsApi";
 import { useAuth } from "../auth/useAuth";
@@ -19,6 +20,7 @@ import { getDocumentDetailSubmitPlacement, getDocumentWorkflowActionState } from
 export function DocumentDetailPage() {
   const { id } = useParams();
   const location = useLocation();
+  const navigate = useNavigate();
   const { user } = useAuth();
   const fileInputRef = useRef(null);
   const [document, setDocument] = useState(null);
@@ -26,10 +28,12 @@ export function DocumentDetailPage() {
   const [error, setError] = useState("");
   const [isReplacingFile, setIsReplacingFile] = useState(false);
   const [isSubmittingReview, setIsSubmittingReview] = useState(false);
+  const [isRestoringDeletedDocument, setIsRestoringDeletedDocument] = useState(false);
   const [feedback, setFeedback] = useState({ success: "", error: "" });
+  const includeDeleted = new URLSearchParams(location.search).get("include_deleted") === "1";
 
   async function refreshDocumentDetails() {
-    const result = await getDocumentById(id);
+    const result = await getDocumentById(id, includeDeleted ? { include_deleted: true } : undefined);
     setDocument(result);
     setError("");
     return result;
@@ -44,7 +48,7 @@ export function DocumentDetailPage() {
     async function loadDocument() {
       try {
         setIsLoading(true);
-        const result = await getDocumentById(id);
+        const result = await getDocumentById(id, includeDeleted ? { include_deleted: true } : undefined);
         setDocument(result);
         setError("");
       } catch {
@@ -60,7 +64,7 @@ export function DocumentDetailPage() {
       error: "",
     });
     loadDocument();
-  }, [id, location.state]);
+  }, [id, includeDeleted, location.state]);
 
   function handleReplaceClick() {
     fileInputRef.current?.click();
@@ -105,6 +109,26 @@ export function DocumentDetailPage() {
       });
     } finally {
       setIsSubmittingReview(false);
+    }
+  }
+
+  async function handleRestoreDeletedDocument() {
+    try {
+      setIsRestoringDeletedDocument(true);
+      setFeedback({ success: "", error: "" });
+      const restored = await restoreDocument(id);
+      setDocument(restored);
+      navigate(`/documents/${restored.id}`, {
+        replace: true,
+        state: { successMessage: `تمت استعادة الوثيقة ${restored.doc_number} بنجاح.` },
+      });
+    } catch (requestError) {
+      setFeedback({
+        success: "",
+        error: getErrorMessage(requestError, "تعذّرت استعادة الوثيقة."),
+      });
+    } finally {
+      setIsRestoringDeletedDocument(false);
     }
   }
 
@@ -176,6 +200,9 @@ export function DocumentDetailPage() {
       ? "يمكنك قراءة الملف داخل الصفحة أو فتحه في صفحة جديدة أو طباعته ضمن نطاقك المسموح فقط. لا تتاح لك أي إجراءات تعديل على الوثيقة."
       : "يمكنك قراءة ملف الوثيقة داخل الصفحة أو فتحه في صفحة جديدة أو طباعته. تظهر إجراءات التعديل فقط عندما تكون متاحة حسب الدور والحالة.";
   const documentActionRowVisible = canEditDocument || (canReplacePdf && !isRejected);
+  const canRestoreDeletedDocument =
+    document.is_deleted &&
+    (user?.role === "admin" || (user?.role === "data_entry" && isDocumentCreator));
 
   return (
     <section>
@@ -191,6 +218,43 @@ export function DocumentDetailPage() {
 
       <AlertMessage type="success" message={feedback.success} />
       <AlertMessage type="error" message={feedback.error} />
+
+      {document.is_deleted ? (
+        <div className="card deleted-document-state-card">
+          <div className="deleted-document-state-card__header">
+            <div>
+              <h3 className="deleted-document-state-card__title">هذه الوثيقة محذوفة منطقيًا</h3>
+              <p className="deleted-document-state-card__helper">
+                لا تظهر هذه الوثيقة في القوائم التشغيلية العادية حاليًا. يمكنك مراجعة بياناتها ثم تأكيد الاستعادة لإعادتها إلى مسار العمل.
+              </p>
+            </div>
+            <StatusBadge status={document.status} label={document.status_display_label} />
+          </div>
+          <div className="deleted-document-state-card__meta">
+            <span>
+              <strong>تم الحذف بواسطة:</strong> {document.deleted_by_name || "-"}
+            </span>
+            <span>
+              <strong>تاريخ الحذف:</strong> {formatDate(document.deleted_at)}
+            </span>
+          </div>
+          <div className="deleted-document-state-card__actions">
+            {canRestoreDeletedDocument ? (
+              <button
+                type="button"
+                className="btn-primary"
+                onClick={handleRestoreDeletedDocument}
+                disabled={isRestoringDeletedDocument}
+              >
+                {isRestoringDeletedDocument ? "جارٍ تنفيذ الاستعادة..." : "تأكيد الاستعادة"}
+              </button>
+            ) : null}
+            <Link to="/documents/deleted" className="btn-secondary">
+              العودة إلى المحذوفات المنطقية
+            </Link>
+          </div>
+        </div>
+      ) : null}
 
       {canShowDraftSubmitCard ? (
         <div className="card draft-submit-card">
@@ -304,6 +368,16 @@ export function DocumentDetailPage() {
         <p>
           <strong>الحذف المنطقي:</strong> {document.is_deleted ? "نعم" : "لا"}
         </p>
+        {document.is_deleted ? (
+          <p>
+            <strong>تم الحذف بواسطة:</strong> {document.deleted_by_name || "-"}
+          </p>
+        ) : null}
+        {document.is_deleted ? (
+          <p>
+            <strong>تاريخ الحذف:</strong> {formatDate(document.deleted_at)}
+          </p>
+        ) : null}
         <p className="full-row path-text">
           <strong>المسار:</strong> {document.file_path}
         </p>
@@ -332,14 +406,16 @@ export function DocumentDetailPage() {
         ) : null}
       </div>
 
-      <DocumentPdfPanel
-        document={document}
-        title={pdfSectionTitle}
-        helperText={pdfSectionHelper}
-        refreshKey={`${document.file_path || ""}:${document.updated_at || ""}`}
-      />
+      {!document.is_deleted ? (
+        <DocumentPdfPanel
+          document={document}
+          title={pdfSectionTitle}
+          helperText={pdfSectionHelper}
+          refreshKey={`${document.file_path || ""}:${document.updated_at || ""}`}
+        />
+      ) : null}
 
-      {shouldShowWorkflowActions ? (
+      {shouldShowWorkflowActions && !document.is_deleted ? (
         <DocumentWorkflowActions
           document={document}
           hideSubmitAction={lowerWorkflowHideSubmitAction}

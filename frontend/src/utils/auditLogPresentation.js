@@ -85,6 +85,7 @@ export const AUDIT_FIELD_LABELS = {
 };
 
 const HIDDEN_CHANGE_KEYS = new Set(["message"]);
+const SIMPLE_SYSTEM_METADATA_CHANGE_KEYS = new Set(["deleted_at", "deleted_by"]);
 
 function isEmptyValue(value) {
   if (value === null || value === undefined || value === "") {
@@ -116,7 +117,15 @@ function comparableValue(value) {
   return JSON.stringify(value ?? null);
 }
 
-function scalarToText(key, value) {
+function getResolvedAuditUserLabel(user) {
+  if (!user || typeof user !== "object") {
+    return "";
+  }
+
+  return user.display_name || user.full_name || user.username || "";
+}
+
+function scalarToText(key, value, relatedUsers = {}) {
   if (isEmptyValue(value)) {
     return "—";
   }
@@ -145,6 +154,12 @@ function scalarToText(key, value) {
   }
 
   if (typeof value === "number" && key.endsWith("_by")) {
+    const resolvedUser = relatedUsers[String(value)];
+    const resolvedLabel = getResolvedAuditUserLabel(resolvedUser);
+    if (resolvedLabel) {
+      return resolvedLabel;
+    }
+
     return `مستخدم رقم ${value}`;
   }
 
@@ -194,7 +209,9 @@ export function getAuditActorSecondary(log) {
   return primary !== log.actor.username ? log.actor.username : "";
 }
 
-export function normalizeAuditValue(key, value) {
+export function normalizeAuditValue(key, value, options = {}) {
+  const relatedUsers = options.relatedUsers || {};
+
   if (isEmptyValue(value)) {
     return { kind: "empty", text: "—" };
   }
@@ -205,7 +222,7 @@ export function normalizeAuditValue(key, value) {
       items: value.map((item, index) => ({
         id: `${key}-${index}`,
         label: Array.isArray(item) || typeof item !== "object" || item === null ? null : `عنصر ${index + 1}`,
-        value: normalizeAuditValue(key, item),
+        value: normalizeAuditValue(key, item, options),
       })),
     };
   }
@@ -216,13 +233,13 @@ export function normalizeAuditValue(key, value) {
       .map(([nestedKey, nestedValue]) => ({
         key: nestedKey,
         label: getAuditFieldLabel(nestedKey),
-        value: normalizeAuditValue(nestedKey, nestedValue),
+        value: normalizeAuditValue(nestedKey, nestedValue, options),
       }));
 
     return items.length ? { kind: "pairs", items } : { kind: "empty", text: "—" };
   }
 
-  return { kind: "text", text: scalarToText(key, value) };
+  return { kind: "text", text: scalarToText(key, value, relatedUsers) };
 }
 
 export function auditValueToPlainText(normalizedValue) {
@@ -281,6 +298,7 @@ export function getAuditNarratives(log) {
 export function getAuditChangeEntries(log) {
   const oldValues = log?.old_values || {};
   const newValues = log?.new_values || {};
+  const relatedUsers = log?.related_users || {};
   const keys = Array.from(new Set([...Object.keys(oldValues), ...Object.keys(newValues)]));
 
   return keys
@@ -288,8 +306,8 @@ export function getAuditChangeEntries(log) {
     .map((key) => {
       const beforeValue = oldValues[key];
       const afterValue = newValues[key];
-      const beforeNormalized = normalizeAuditValue(key, beforeValue);
-      const afterNormalized = normalizeAuditValue(key, afterValue);
+      const beforeNormalized = normalizeAuditValue(key, beforeValue, { relatedUsers });
+      const afterNormalized = normalizeAuditValue(key, afterValue, { relatedUsers });
       const beforeEmpty = isEmptyValue(beforeValue);
       const afterEmpty = isEmptyValue(afterValue);
       let changeType = "same";
@@ -313,6 +331,28 @@ export function getAuditChangeEntries(log) {
     .filter((entry) => entry.changeType !== "same");
 }
 
+export function shouldUseSimpleAuditChange(entry) {
+  return SIMPLE_SYSTEM_METADATA_CHANGE_KEYS.has(entry?.key) && entry?.changeType !== "changed";
+}
+
+export function getSimpleAuditChangeDisplay(entry) {
+  if (!shouldUseSimpleAuditChange(entry)) {
+    return null;
+  }
+
+  if (entry.changeType === "removed") {
+    return {
+      label: "القيمة السابقة",
+      value: entry.before,
+    };
+  }
+
+  return {
+    label: "القيمة المسجلة",
+    value: entry.after,
+  };
+}
+
 export function getAuditDisplaySummary(log) {
   const narratives = getAuditNarratives(log);
   if (narratives.length) {
@@ -320,6 +360,16 @@ export function getAuditDisplaySummary(log) {
   }
 
   const changes = getAuditChangeEntries(log);
+  const deletedStateChange = changes.find((entry) => entry.key === "is_deleted");
+  if (
+    log?.action === "restore" &&
+    deletedStateChange &&
+    auditValueToPlainText(deletedStateChange.before) === "نعم" &&
+    auditValueToPlainText(deletedStateChange.after) === "لا"
+  ) {
+    return "تمت استعادة الوثيقة وإعادتها إلى القوائم النشطة.";
+  }
+
   const statusChange = changes.find((entry) => entry.key === "status");
   if (statusChange) {
     return `تغيّرت الحالة من ${auditValueToPlainText(statusChange.before)} إلى ${auditValueToPlainText(statusChange.after)}.`;

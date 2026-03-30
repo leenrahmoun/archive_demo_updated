@@ -6,6 +6,7 @@ const CREATE_ROLES = new Set(["admin", "data_entry"]);
 const AUDIT_ROLES = new Set(["admin"]);
 const ADMIN_ROLES = new Set(["admin"]);
 const REVIEW_QUEUE_ROLES = new Set(["auditor", "admin"]);
+const DELETED_DOCUMENT_ROLES = new Set(["admin", "data_entry"]);
 
 const ROLE_LABELS = {
   admin: "مدير النظام",
@@ -22,6 +23,7 @@ export function AppLayout() {
   const canManageUsers = ADMIN_ROLES.has(user?.role);
   const canManageDocumentTypes = ADMIN_ROLES.has(user?.role);
   const canViewReviewQueue = REVIEW_QUEUE_ROLES.has(user?.role);
+  const canViewDeletedDocuments = DELETED_DOCUMENT_ROLES.has(user?.role);
   const roleLabel = ROLE_LABELS[user?.role] || user?.role || "مستخدم";
 
   return (
@@ -35,7 +37,10 @@ export function AppLayout() {
         <nav className="sidebar__nav">
           {canViewAdminDashboard ? <NavLink to="/admin/dashboard">لوحة الإدارة</NavLink> : null}
           <NavLink to="/dossiers">الأضابير</NavLink>
-          <NavLink to="/documents">الوثائق</NavLink>
+          <NavLink to="/documents" end>
+            الوثائق
+          </NavLink>
+          {canViewDeletedDocuments ? <NavLink to="/documents/deleted">المحذوفات المنطقية</NavLink> : null}
           {canViewReviewQueue ? <NavLink to="/review-queue">قائمة المراجعة</NavLink> : null}
           {canViewAudit ? <NavLink to="/audit-logs">سجل التدقيق</NavLink> : null}
           {canManageUsers ? <NavLink to="/admin/users">إدارة المستخدمين</NavLink> : null}
