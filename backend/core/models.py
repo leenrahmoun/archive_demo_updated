@@ -3,6 +3,8 @@ from django.core.exceptions import ValidationError
 from django.db import models
 from django.db.models import Q
 
+from core.dossier_validation import validate_dossier_identity_data
+
 
 class UserRole(models.TextChoices):
     ADMIN = "admin", "Admin"
@@ -64,6 +66,8 @@ class Dossier(models.Model):
     full_name = models.CharField(max_length=200)
     national_id = models.CharField(max_length=30, unique=True)
     personal_id = models.CharField(max_length=30)
+    is_non_syrian = models.BooleanField(default=False)
+    nationality_name = models.CharField(max_length=100, blank=True, default="")
     governorate = models.ForeignKey(
         Governorate, on_delete=models.PROTECT, related_name="dossiers", null=True, blank=True
     )
@@ -81,6 +85,28 @@ class Dossier(models.Model):
             models.Index(fields=["personal_id"]),
             models.Index(fields=["file_number"]),
         ]
+
+    def clean(self) -> None:
+        super().clean()
+        validation = validate_dossier_identity_data(
+            is_non_syrian=self.is_non_syrian,
+            nationality_name=self.nationality_name,
+            national_id=self.national_id,
+            personal_id=self.personal_id,
+            room_number=self.room_number,
+            column_number=self.column_number,
+            shelf_number=self.shelf_number,
+        )
+        normalized_values = validation["normalized_values"]
+        self.national_id = normalized_values["national_id"]
+        self.personal_id = normalized_values["personal_id"]
+        self.room_number = normalized_values["room_number"]
+        self.column_number = normalized_values["column_number"]
+        self.shelf_number = normalized_values["shelf_number"]
+        self.nationality_name = validation["normalized_nationality_name"]
+
+        if validation["errors"]:
+            raise ValidationError(validation["errors"])
 
     def __str__(self) -> str:
         return self.file_number

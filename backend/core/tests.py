@@ -16,6 +16,7 @@ from rest_framework_simplejwt.tokens import RefreshToken
 from rest_framework_simplejwt.token_blacklist.models import BlacklistedToken, OutstandingToken
 
 from core.models import AuditAction, AuditLog, Document, DocumentStatus, DocumentType, Dossier, Governorate, User, UserRole
+from core.reference_data import get_core_document_type_entries, sync_core_document_types
 
 
 class TemporaryMediaRootMixin:
@@ -59,23 +60,17 @@ class DossierApiTests(TemporaryMediaRootMixin, APITestCase):
             role=UserRole.DATA_ENTRY,
         )
         self.client.force_authenticate(user=self.user)
-        self.doc_type = DocumentType.objects.create(
-            name="قرار تعيين",
-            slug="appointment",
-            group_name="group",
-            display_order=1,
-            is_active=True,
-        )
+        self.doc_type = DocumentType.objects.get(slug="appointment")
 
     def _payload(self, **overrides):
         payload = {
             "file_number": "DOS-001",
             "full_name": "Test User",
-            "national_id": "NAT-001",
-            "personal_id": "PER-001",
-            "room_number": "R1",
-            "column_number": "C1",
-            "shelf_number": "S1",
+            "national_id": "1234567890",
+            "personal_id": "987654321",
+            "room_number": "101",
+            "column_number": "4",
+            "shelf_number": "7",
             "first_document.doc_type_id": str(self.doc_type.id),
             "first_document.doc_number": "DOC-001",
             "first_document.doc_name": "First doc",
@@ -100,6 +95,8 @@ class DossierApiTests(TemporaryMediaRootMixin, APITestCase):
         self.assertEqual(document.file_size_kb, 120)
         self.assertEqual(document.mime_type, "application/pdf")
         self.assertStoredFileExists(document.file_path)
+        self.assertFalse(dossier.is_non_syrian)
+        self.assertEqual(dossier.nationality_name, "")
 
     def test_create_dossier_rejects_missing_first_document(self):
         payload = self._payload()
@@ -151,6 +148,80 @@ class DossierApiTests(TemporaryMediaRootMixin, APITestCase):
         self.assertEqual(response.data["first_document"]["doc_type_id"][0], "نوع الوثيقة غير نشط حاليًا ولا يمكن اختياره.")
 
 
+    def test_create_dossier_accepts_syrian_national_id_with_11_digits(self):
+        response = self.client.post(
+            "/api/dossiers/",
+            self._payload(file_number="DOS-011", national_id="12345678901", personal_id="12345"),
+            format="multipart",
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+        self.assertEqual(Dossier.objects.get(file_number="DOS-011").national_id, "12345678901")
+
+    def test_create_dossier_rejects_syrian_national_id_with_invalid_length(self):
+        response = self.client.post(
+            "/api/dossiers/",
+            self._payload(file_number="DOS-012", national_id="123456789", personal_id="123456789"),
+            format="multipart",
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertEqual(response.data["national_id"][0], "الرقم الوطني للسوري يجب أن يتكون من 10 أو 11 رقمًا.")
+
+    def test_create_dossier_requires_nationality_name_for_non_syrian(self):
+        response = self.client.post(
+            "/api/dossiers/",
+            self._payload(
+                file_number="DOS-013",
+                national_id="1234567",
+                personal_id="1234567",
+                is_non_syrian="true",
+                nationality_name="",
+            ),
+            format="multipart",
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertEqual(response.data["nationality_name"][0], "يرجى إدخال الجنسية أو البلد عندما تكون الجنسية غير سورية.")
+
+    def test_create_dossier_accepts_palestinian_as_non_syrian_with_flexible_personal_id(self):
+        response = self.client.post(
+            "/api/dossiers/",
+            self._payload(
+                file_number="DOS-014",
+                national_id="1234567",
+                personal_id="1234567",
+                is_non_syrian="true",
+                nationality_name="فلسطينية",
+            ),
+            format="multipart",
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+        dossier = Dossier.objects.get(file_number="DOS-014")
+        self.assertTrue(dossier.is_non_syrian)
+        self.assertEqual(dossier.nationality_name, "فلسطينية")
+        self.assertEqual(response.data["nationality_display"], "فلسطينية")
+
+    def test_create_dossier_rejects_non_numeric_identity_and_location_values(self):
+        response = self.client.post(
+            "/api/dossiers/",
+            self._payload(
+                file_number="DOS-015",
+                national_id="12345A",
+                personal_id="1234567890",
+                room_number="10B",
+                column_number="4A",
+            ),
+            format="multipart",
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertEqual(response.data["national_id"][0], "هذا الحقل يجب أن يحتوي على أرقام فقط.")
+        self.assertEqual(response.data["room_number"][0], "هذا الحقل يجب أن يحتوي على أرقام فقط.")
+        self.assertEqual(response.data["column_number"][0], "هذا الحقل يجب أن يحتوي على أرقام فقط.")
+
+
 class AuthAndLookupApiTests(APITestCase):
     def setUp(self):
         self.user = User.objects.create_user(
@@ -165,8 +236,14 @@ class AuthAndLookupApiTests(APITestCase):
 
         Governorate.objects.create(name="Damascus", is_active=True)
         Governorate.objects.create(name="Inactive Gov", is_active=False)
-        DocumentType.objects.create(name="قرار تعيين", slug="appointment", group_name="core", display_order=1, is_active=True)
-        DocumentType.objects.create(name="Inactive", slug="inactive", group_name="core", display_order=2, is_active=False)
+        self.active_type = DocumentType.objects.get(slug="appointment")
+        self.inactive_type = DocumentType.objects.create(
+            name="Inactive",
+            slug="inactive-test-type",
+            group_name="custom",
+            display_order=999,
+            is_active=False,
+        )
 
     def test_auth_me_returns_profile(self):
         response = self.client.get("/api/auth/me/")
@@ -196,8 +273,10 @@ class AuthAndLookupApiTests(APITestCase):
     def test_document_types_lookup_returns_active_only(self):
         response = self.client.get("/api/document-types/")
         self.assertEqual(response.status_code, status.HTTP_200_OK)
-        self.assertEqual(len(response.data), 1)
-        self.assertEqual(response.data[0]["name"], "قرار تعيين")
+        returned_ids = [item["id"] for item in response.data]
+        self.assertTrue(response.data)
+        self.assertIn(self.active_type.id, returned_ids)
+        self.assertNotIn(self.inactive_type.id, returned_ids)
         self.assertEqual(set(response.data[0].keys()), {"id", "name"})
 
 
@@ -270,13 +349,11 @@ class AdminDocumentTypeManagementApiTests(APITestCase):
         )
 
     def test_admin_can_list_document_types_with_usage_counts(self):
-        response = self.client.get("/api/admin/document-types/")
+        response = self.client.get("/api/admin/document-types/?search=نسخة عقد")
 
         self.assertEqual(response.status_code, status.HTTP_200_OK)
         self.assertIn("results", response.data)
-        self.assertGreaterEqual(response.data["count"], 3)
-        returned_ids = [item["id"] for item in response.data["results"]]
-        self.assertIn(self.active_type.id, returned_ids)
+        self.assertEqual(response.data["count"], 1)
         used_entry = next(item for item in response.data["results"] if item["id"] == self.used_type.id)
         self.assertEqual(set(used_entry.keys()), {"id", "name", "is_active", "usage_count"})
         self.assertEqual(used_entry["usage_count"], 1)
@@ -294,13 +371,14 @@ class AdminDocumentTypeManagementApiTests(APITestCase):
 
         inactive_response = self.client.get("/api/admin/document-types/?status=inactive")
         active_response = self.client.get("/api/admin/document-types/?status=active")
+        active_search_response = self.client.get("/api/admin/document-types/?status=active&search=بيان خدمة")
 
         self.assertEqual(inactive_response.status_code, status.HTTP_200_OK)
+        self.assertEqual(active_response.status_code, status.HTTP_200_OK)
+        self.assertEqual(active_search_response.status_code, status.HTTP_200_OK)
         self.assertEqual({item["id"] for item in inactive_response.data["results"]}, {self.used_type.id})
-        active_ids = {item["id"] for item in active_response.data["results"]}
-        self.assertIn(self.active_type.id, active_ids)
-        self.assertIn(self.unused_type.id, active_ids)
-        self.assertNotIn(self.used_type.id, active_ids)
+        self.assertTrue(all(item["is_active"] for item in active_response.data["results"]))
+        self.assertEqual([item["id"] for item in active_search_response.data["results"]], [self.unused_type.id])
 
     def test_admin_rejects_duplicate_document_type_name_after_normalization(self):
         response = self.client.post(
@@ -2697,8 +2775,9 @@ class SeedLookupsCommandTests(APITestCase):
 
     def test_seed_creates_document_types(self):
         output = self._run_seed()
+        expected_count = len(get_core_document_type_entries())
         count = DocumentType.objects.filter(is_active=True).count()
-        self.assertEqual(count, 59)
+        self.assertEqual(count, expected_count)
         self.assertIn("Document types", output)
 
     def test_seed_is_idempotent_for_governorates(self):
@@ -2729,7 +2808,7 @@ class SeedLookupsCommandTests(APITestCase):
         self.client.force_authenticate(user=admin)
         response = self.client.get("/api/document-types/")
         self.assertEqual(response.status_code, status.HTTP_200_OK)
-        self.assertEqual(len(response.data), 59)
+        self.assertEqual(len(response.data), len(get_core_document_type_entries()))
 
     def test_seed_keeps_existing_custom_document_types_active(self):
         extra_type = DocumentType.objects.create(
@@ -2790,6 +2869,70 @@ class SeedLookupsCommandTests(APITestCase):
         contract_entry = next((item for item in response.data if item["id"] == approved_type.id), None)
         self.assertIsNotNone(contract_entry)
         self.assertEqual(contract_entry["name"], "عقد")
+
+
+class CoreDocumentTypeBootstrapTests(APITestCase):
+    def setUp(self):
+        self.admin = User.objects.create_user(username="bootstrap_admin", password="pass12345", role=UserRole.ADMIN)
+        self.client.force_authenticate(user=self.admin)
+        self.core_entries = get_core_document_type_entries()
+
+    def test_core_document_types_exist_after_database_initialization(self):
+        self.assertEqual(
+            DocumentType.objects.filter(slug__in=[entry["slug"] for entry in self.core_entries]).count(),
+            len(self.core_entries),
+        )
+
+    def test_sync_recreates_missing_core_document_type(self):
+        missing_entry = self.core_entries[0]
+        DocumentType.objects.filter(slug=missing_entry["slug"]).delete()
+
+        result = sync_core_document_types()
+
+        recreated = DocumentType.objects.get(slug=missing_entry["slug"])
+        self.assertEqual(result["created"], 1)
+        self.assertEqual(recreated.name, missing_entry["name"])
+        self.assertEqual(recreated.group_name, missing_entry["group"])
+        self.assertEqual(recreated.display_order, missing_entry["order"])
+        self.assertTrue(recreated.is_active)
+
+    def test_sync_does_not_duplicate_existing_core_document_types(self):
+        count_before = DocumentType.objects.filter(slug__in=[entry["slug"] for entry in self.core_entries]).count()
+
+        result = sync_core_document_types()
+
+        count_after = DocumentType.objects.filter(slug__in=[entry["slug"] for entry in self.core_entries]).count()
+        self.assertEqual(count_before, len(self.core_entries))
+        self.assertEqual(count_after, count_before)
+        self.assertEqual(result["created"], 0)
+        self.assertEqual(result["updated"], len(self.core_entries))
+
+    def test_sync_preserves_custom_admin_document_types(self):
+        custom_type = DocumentType.objects.create(
+            name="نوع مخصص للإدارة",
+            slug="custom-admin-type",
+            group_name="custom",
+            display_order=999,
+            is_active=False,
+        )
+
+        sync_core_document_types()
+        custom_type.refresh_from_db()
+
+        self.assertEqual(custom_type.name, "نوع مخصص للإدارة")
+        self.assertEqual(custom_type.group_name, "custom")
+        self.assertEqual(custom_type.display_order, 999)
+        self.assertFalse(custom_type.is_active)
+
+    def test_public_document_types_api_is_not_empty_after_initialization(self):
+        response = self.client.get("/api/document-types/")
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertGreater(len(response.data), 0)
+        returned_names = {item["name"] for item in response.data}
+        self.assertIn(self.core_entries[0]["name"], returned_names)
+
+
 class SeededDocumentTypeLookupApiTests(APITestCase):
     def test_document_types_api_hides_inactive_entries_cleanly(self):
         active_type = DocumentType.objects.create(

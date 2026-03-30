@@ -10,6 +10,7 @@ from rest_framework_simplejwt.tokens import RefreshToken, TokenError
 from django.utils.text import slugify
 
 from core.access import get_dossier_documents_for_user
+from core.dossier_validation import normalize_text_value, validate_dossier_identity_data
 from core.models import AuditAction, AuditLog, Document, DocumentStatus, DocumentType, Dossier, Governorate, UserRole
 from core.services.audit_log_service import create_audit_log
 from core.services.document_storage_service import (
@@ -827,6 +828,7 @@ class DocumentReplaceFileSerializer(serializers.Serializer):
 class DossierListSerializer(serializers.ModelSerializer):
     governorate_name = serializers.CharField(source="governorate.name", read_only=True)
     created_by_name = serializers.CharField(source="created_by.username", read_only=True)
+    nationality_display = serializers.SerializerMethodField()
 
     class Meta:
         model = Dossier
@@ -836,6 +838,9 @@ class DossierListSerializer(serializers.ModelSerializer):
             "full_name",
             "national_id",
             "personal_id",
+            "is_non_syrian",
+            "nationality_name",
+            "nationality_display",
             "governorate",
             "governorate_name",
             "room_number",
@@ -847,6 +852,9 @@ class DossierListSerializer(serializers.ModelSerializer):
             "updated_at",
             "is_archived",
         )
+
+    def get_nationality_display(self, obj):
+        return obj.nationality_name or "سورية"
 
 
 class DossierDetailSerializer(DossierListSerializer):
@@ -883,6 +891,8 @@ class DossierCreateSerializer(serializers.Serializer):
     full_name = serializers.CharField(max_length=200)
     national_id = serializers.CharField(max_length=30)
     personal_id = serializers.CharField(max_length=30)
+    is_non_syrian = serializers.BooleanField(required=False, default=False)
+    nationality_name = serializers.CharField(max_length=100, required=False, allow_blank=True)
     governorate_id = serializers.IntegerField(required=False, allow_null=True)
     room_number = serializers.CharField(max_length=20)
     column_number = serializers.CharField(max_length=20)
@@ -892,6 +902,24 @@ class DossierCreateSerializer(serializers.Serializer):
     def validate(self, attrs):
         if not attrs.get("first_document"):
             raise serializers.ValidationError({"first_document": "First document is required; empty dossier creation is not allowed."})
+
+        attrs["file_number"] = normalize_text_value(attrs["file_number"])
+        attrs["full_name"] = normalize_text_value(attrs["full_name"])
+        validation = validate_dossier_identity_data(
+            is_non_syrian=attrs.get("is_non_syrian", False),
+            nationality_name=attrs.get("nationality_name", ""),
+            national_id=attrs.get("national_id", ""),
+            personal_id=attrs.get("personal_id", ""),
+            room_number=attrs.get("room_number", ""),
+            column_number=attrs.get("column_number", ""),
+            shelf_number=attrs.get("shelf_number", ""),
+        )
+
+        if validation["errors"]:
+            raise serializers.ValidationError(validation["errors"])
+
+        attrs.update(validation["normalized_values"])
+        attrs["nationality_name"] = validation["normalized_nationality_name"]
         return attrs
 
     def create(self, validated_data):

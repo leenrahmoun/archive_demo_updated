@@ -64,6 +64,7 @@ export function DocumentTypeAutocomplete({
   placeholder = "ابدأ بكتابة نوع الوثيقة",
   helperText = "اكتب جزءًا من الاسم العربي لعرض الأنواع المطابقة.",
   inactiveSelectionHelperText = "النوع الحالي غير نشط، لكنه يبقى ظاهرًا هنا للحفاظ على اختيار هذه الوثيقة.",
+  errorText = "",
   required = false,
 }) {
   const [query, setQuery] = useState("");
@@ -133,7 +134,8 @@ export function DocumentTypeAutocomplete({
         }}
         onChange={handleInputChange}
       />
-      <small className="muted">{helperMessage}</small>
+      {errorText ? <small className="form-field__error">{errorText}</small> : null}
+      {!errorText && helperMessage ? <small className="muted">{helperMessage}</small> : null}
 
       {isOpen ? (
         <div className="document-type-picker__panel">

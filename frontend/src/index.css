@@ -1071,6 +1071,17 @@ textarea {
   line-height: 1.5;
 }
 
+.form-field__error {
+  color: #b42318;
+  font-weight: 600;
+}
+
+.dossier-nationality-toggle {
+  display: flex;
+  align-items: center;
+  min-height: 48px;
+}
+
 .document-type-picker {
   position: relative;
 }
@@ -1135,6 +1146,18 @@ textarea {
   align-items: center;
   gap: 0.55rem;
   min-height: 42px;
+  font-weight: 700;
+  color: var(--color-text-primary);
+}
+
+.checkbox-row input[type="checkbox"] {
+  width: 1.05rem;
+  height: 1.05rem;
+  margin: 0;
+  padding: 0;
+  border-radius: 4px;
+  accent-color: var(--color-primary);
+  box-shadow: none;
 }
 
 .user-management-grid {

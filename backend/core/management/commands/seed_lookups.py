@@ -5,7 +5,8 @@ from pathlib import Path
 
 from django.core.management.base import BaseCommand
 
-from core.models import DocumentType, Governorate
+from core.models import Governorate
+from core.reference_data import sync_core_document_types
 
 DATA_DIR = Path(__file__).parent / "data"
 
@@ -35,22 +36,7 @@ class Command(BaseCommand):
         )
 
     def _seed_document_types(self):
-        data = json.loads((DATA_DIR / "document_types.json").read_text(encoding="utf-8"))
-        created = updated = 0
-        for entry in data:
-            obj, is_new = DocumentType.objects.update_or_create(
-                slug=entry["slug"],
-                defaults={
-                    "name": entry["name"],
-                    "group_name": entry["group"],
-                    "display_order": entry["order"],
-                    "is_active": True,
-                },
-            )
-            if is_new:
-                created += 1
-            else:
-                updated += 1
+        result = sync_core_document_types()
         self.stdout.write(
-            f"  Document types: {created} created, {updated} already existed (ensured current values)."
+            f"  Document types: {result['created']} created, {result['updated']} already existed (ensured current values)."
         )

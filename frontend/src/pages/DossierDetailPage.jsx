@@ -55,10 +55,13 @@ export function DossierDetailPage() {
           <strong>الاسم:</strong> {dossier.full_name}
         </p>
         <p>
+          <strong>الجنسية:</strong> {dossier.nationality_display || "سورية"}
+        </p>
+        <p>
           <strong>الرقم الوطني:</strong> {dossier.national_id}
         </p>
         <p>
-          <strong>الرقم الشخصي:</strong> {dossier.personal_id}
+          <strong>الرقم الذاتي:</strong> {dossier.personal_id}
         </p>
       </div>
 
