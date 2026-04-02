@@ -1,6 +1,7 @@
 from rest_framework.permissions import SAFE_METHODS, BasePermission
 
 from core.models import UserRole
+from core.services.audit_log_service import log_document_workflow_access_denied
 
 
 class DossierPermission(BasePermission):
@@ -61,17 +62,54 @@ class DocumentWorkflowPermission(BasePermission):
             return True
 
         action = getattr(view, "workflow_action", "")
+        document_id = view.kwargs.get("pk")
         if action == "submit":
-            return user.role == UserRole.DATA_ENTRY
+            if user.role == UserRole.DATA_ENTRY:
+                return True
+            log_document_workflow_access_denied(
+                user=user,
+                workflow_action=action,
+                request=request,
+                document_id=document_id,
+                reason="Only data entry users can submit documents.",
+            )
+            return False
         if action in {"approve", "reject"}:
-            return user.role == UserRole.AUDITOR
-        if action in {"soft_delete", "restore"}:
-            return user.role == UserRole.DATA_ENTRY
+            if user.role == UserRole.AUDITOR:
+                return True
+            log_document_workflow_access_denied(
+                user=user,
+                workflow_action=action,
+                request=request,
+                document_id=document_id,
+                reason="Only auditors can review documents.",
+            )
+            return False
+        if action == "soft_delete":
+            if user.role == UserRole.DATA_ENTRY:
+                return True
+            log_document_workflow_access_denied(
+                user=user,
+                workflow_action=action,
+                request=request,
+                document_id=document_id,
+                reason="Only data entry users can soft-delete documents.",
+            )
+            return False
+        if action == "restore":
+            log_document_workflow_access_denied(
+                user=user,
+                workflow_action=action,
+                request=request,
+                document_id=document_id,
+                reason="Only admins can restore documents.",
+            )
+            return False
         return False
 
 
 class DeletedDocumentPermission(BasePermission):
-    """Read-only access to deleted documents for admin and data entry users."""
+    """Read-only access to deleted documents for admin only."""
 
     def has_permission(self, request, view):
         user = request.user
@@ -79,7 +117,7 @@ class DeletedDocumentPermission(BasePermission):
             return False
         if request.method not in SAFE_METHODS:
             return False
-        return user.role in {UserRole.ADMIN, UserRole.DATA_ENTRY}
+        return user.role == UserRole.ADMIN
 
 
 class AuditLogPermission(BasePermission):

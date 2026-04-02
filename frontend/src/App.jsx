@@ -69,7 +69,7 @@ export default function App() {
         <Route
           path="/documents/deleted"
           element={
-            <RoleGuard allowedRoles={["admin", "data_entry"]}>
+            <RoleGuard allowedRoles={["admin"]}>
               <DeletedDocumentsPage />
             </RoleGuard>
           }

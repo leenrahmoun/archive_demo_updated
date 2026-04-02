@@ -167,6 +167,7 @@ export function DocumentDetailPage() {
   const canShowRejectedResubmitAction = submitPlacement === "rejection-card";
   const canShowRejectedReplaceAction = isRejected && canReplacePdf;
   const canShowRejectedActions = canShowRejectedReplaceAction || canShowRejectedResubmitAction;
+  const canAddAnotherDocument = Boolean(document.can_add_another_document);
   const lowerWorkflowHideSubmitAction = submitPlacement !== "none";
   const lowerWorkflowActionState = getDocumentWorkflowActionState(user, document, {
     hideSubmitAction: lowerWorkflowHideSubmitAction,
@@ -199,7 +200,7 @@ export function DocumentDetailPage() {
     : isAuditor
       ? "يمكنك قراءة الملف داخل الصفحة أو فتحه في صفحة جديدة أو طباعته ضمن نطاقك المسموح فقط. لا تتاح لك أي إجراءات تعديل على الوثيقة."
       : "يمكنك قراءة ملف الوثيقة داخل الصفحة أو فتحه في صفحة جديدة أو طباعته. تظهر إجراءات التعديل فقط عندما تكون متاحة حسب الدور والحالة.";
-  const documentActionRowVisible = canEditDocument || (canReplacePdf && !isRejected);
+  const documentActionRowVisible = canEditDocument || (canReplacePdf && !isRejected) || canAddAnotherDocument;
   const canRestoreDeletedDocument =
     document.is_deleted &&
     (user?.role === "admin" || (user?.role === "data_entry" && isDocumentCreator));
@@ -387,15 +388,26 @@ export function DocumentDetailPage() {
 
         {documentActionRowVisible ? (
           <div className="full-row document-detail-actions">
+            {canAddAnotherDocument ? (
+              <Link
+                to={`/dossiers/${document.dossier}/documents/new`}
+                className="btn-secondary btn-compact document-detail-action-button document-detail-action-button--wide"
+              >
+                إضافة وثيقة أخرى إلى هذه الأضبارة
+              </Link>
+            ) : null}
             {canEditDocument ? (
-              <Link to={`/documents/${document.id}/edit`} className="button">
+              <Link
+                to={`/documents/${document.id}/edit`}
+                className="btn-secondary btn-compact document-detail-action-button document-detail-action-button--primary"
+              >
                 تعديل الوثيقة
               </Link>
             ) : null}
             {canReplacePdf && !isRejected ? (
               <button
                 type="button"
-                className="btn-secondary"
+                className="btn-secondary btn-compact document-detail-action-button"
                 onClick={handleReplaceClick}
                 disabled={isReplacingFile}
               >

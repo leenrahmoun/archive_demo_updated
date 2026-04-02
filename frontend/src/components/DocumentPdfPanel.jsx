@@ -194,7 +194,7 @@ export function DocumentPdfPanel({ document, title, refreshKey }) {
         <div className="document-file-card__actions">
           <button
             type="button"
-            className="btn-secondary"
+            className="btn-secondary btn-compact document-file-card__utility-button"
             onClick={handlePreviewToggle}
             disabled={isPreviewLoading || isPrintingPdf || isOpeningExternalPdf}
           >
@@ -202,7 +202,7 @@ export function DocumentPdfPanel({ document, title, refreshKey }) {
           </button>
           <button
             type="button"
-            className="btn-secondary"
+            className="btn-secondary btn-compact document-file-card__utility-button"
             onClick={handlePrint}
             disabled={isPreviewLoading || isPrintingPdf || isOpeningExternalPdf}
           >
@@ -210,7 +210,7 @@ export function DocumentPdfPanel({ document, title, refreshKey }) {
           </button>
           <button
             type="button"
-            className="btn-secondary"
+            className="btn-secondary btn-compact document-file-card__utility-button document-file-card__utility-button--wide"
             onClick={handleOpenInNewTab}
             disabled={isPreviewLoading || isPrintingPdf || isOpeningExternalPdf}
           >

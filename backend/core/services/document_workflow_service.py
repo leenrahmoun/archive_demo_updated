@@ -4,7 +4,14 @@ from django.db import transaction
 from django.core.exceptions import ValidationError as DjangoValidationError
 from django.utils import timezone
 
-from core.models import AuditAction, Document, DocumentStatus, User, UserRole
+from core.access import (
+    get_document_approve_denial_reason,
+    get_document_reject_denial_reason,
+    get_document_restore_denial_reason,
+    get_document_soft_delete_denial_reason,
+    get_document_submit_denial_reason,
+)
+from core.models import AuditAction, Document, DocumentStatus, User
 from core.services.audit_log_service import create_audit_log
 
 
@@ -37,14 +44,9 @@ def _audit(user: User, action: str, document: Document, old_values: dict, new_va
 
 @transaction.atomic
 def submit_document(*, actor: User, document: Document) -> Document:
-    if actor.role not in {UserRole.ADMIN, UserRole.DATA_ENTRY}:
-        raise WorkflowError("You do not have permission to submit documents.")
-    if actor.role == UserRole.DATA_ENTRY and actor.assigned_auditor_id is None:
-        raise WorkflowError("Data entry users must be assigned to an auditor before submitting documents.")
-    if document.status not in {DocumentStatus.DRAFT, DocumentStatus.REJECTED}:
-        raise WorkflowError("Only draft or rejected documents can be submitted.")
-    if document.is_deleted:
-        raise WorkflowError("Deleted documents cannot be submitted.")
+    denial_reason = get_document_submit_denial_reason(actor, document)
+    if denial_reason is not None:
+        raise WorkflowError(denial_reason)
 
     old_values = {"status": document.status, "submitted_at": document.submitted_at.isoformat() if document.submitted_at else None, "rejection_reason": document.rejection_reason}
     document.status = DocumentStatus.PENDING
@@ -64,14 +66,9 @@ def submit_document(*, actor: User, document: Document) -> Document:
 
 @transaction.atomic
 def approve_document(*, actor: User, document: Document) -> Document:
-    if actor.role not in {UserRole.ADMIN, UserRole.AUDITOR}:
-        raise WorkflowError("You do not have permission to approve documents.")
-    if actor.role == UserRole.AUDITOR and document.created_by.assigned_auditor_id != actor.id:
-        raise WorkflowError("You do not have access to review this document.")
-    if document.status != DocumentStatus.PENDING:
-        raise WorkflowError("Only pending documents can be approved.")
-    if document.is_deleted:
-        raise WorkflowError("Deleted documents cannot be approved.")
+    denial_reason = get_document_approve_denial_reason(actor, document)
+    if denial_reason is not None:
+        raise WorkflowError(denial_reason)
 
     old_values = {"status": document.status, "reviewed_by": document.reviewed_by_id, "reviewed_at": document.reviewed_at}
     document.status = DocumentStatus.APPROVED
@@ -97,14 +94,9 @@ def approve_document(*, actor: User, document: Document) -> Document:
 
 @transaction.atomic
 def reject_document(*, actor: User, document: Document, rejection_reason: str) -> Document:
-    if actor.role not in {UserRole.ADMIN, UserRole.AUDITOR}:
-        raise WorkflowError("You do not have permission to reject documents.")
-    if actor.role == UserRole.AUDITOR and document.created_by.assigned_auditor_id != actor.id:
-        raise WorkflowError("You do not have access to review this document.")
-    if document.status != DocumentStatus.PENDING:
-        raise WorkflowError("Only pending documents can be rejected.")
-    if document.is_deleted:
-        raise WorkflowError("Deleted documents cannot be rejected.")
+    denial_reason = get_document_reject_denial_reason(actor, document)
+    if denial_reason is not None:
+        raise WorkflowError(denial_reason)
     if not rejection_reason:
         raise WorkflowError("rejection_reason is required.")
 
@@ -132,12 +124,9 @@ def reject_document(*, actor: User, document: Document, rejection_reason: str) -
 
 @transaction.atomic
 def soft_delete_document(*, actor: User, document: Document) -> Document:
-    if actor.role not in {UserRole.ADMIN, UserRole.DATA_ENTRY}:
-        raise WorkflowError("You do not have permission to soft-delete documents.")
-    if document.is_deleted:
-        raise WorkflowError("Document is already deleted.")
-    if actor.role == UserRole.DATA_ENTRY and document.status != DocumentStatus.DRAFT:
-        raise WorkflowError("Data entry can soft-delete draft documents only.")
+    denial_reason = get_document_soft_delete_denial_reason(actor, document)
+    if denial_reason is not None:
+        raise WorkflowError(denial_reason)
 
     old_values = {"is_deleted": document.is_deleted, "deleted_by": document.deleted_by_id, "deleted_at": document.deleted_at}
     document.is_deleted = True
@@ -160,12 +149,9 @@ def soft_delete_document(*, actor: User, document: Document) -> Document:
 
 @transaction.atomic
 def restore_document(*, actor: User, document: Document) -> Document:
-    if actor.role not in {UserRole.ADMIN, UserRole.DATA_ENTRY}:
-        raise WorkflowError("You do not have permission to restore documents.")
-    if not document.is_deleted:
-        raise WorkflowError("Document is not deleted.")
-    if actor.role == UserRole.DATA_ENTRY and document.created_by_id != actor.id:
-        raise WorkflowError("You do not have permission to restore this document.")
+    denial_reason = get_document_restore_denial_reason(actor, document)
+    if denial_reason is not None:
+        raise WorkflowError(denial_reason)
 
     old_values = {"is_deleted": document.is_deleted, "deleted_by": document.deleted_by_id, "deleted_at": document.deleted_at}
     document.is_deleted = False

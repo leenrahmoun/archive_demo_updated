@@ -100,7 +100,7 @@ export function ReviewQueuePage() {
         title="قائمة المراجعة"
         subtitle={isAdmin ? "جميع الوثائق المعلقة بانتظار المراجعة" : "الوثائق المعلقة ضمن نطاق المراجعة الخاص بك"}
       />
-      {!isAdmin ? <AlertMessage type="info" message="يعرض هذا الطابور الوثائق المعلقة الخاصة بمدخلي البيانات المرتبطين بك فقط." /> : null}
+      {!isAdmin ? <AlertMessage type="info" message="يعرض هذا قائمة الوثائق المعلقة الخاصة بمدخلي البيانات المرتبطين بك فقط." /> : null}
 
       <AlertMessage type="error" message={error} />
 

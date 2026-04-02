@@ -19,7 +19,7 @@ export function DocumentsListPage() {
   const subtitle = isAuditor
     ? "عرض الوثائق ضمن نطاق مدخلي البيانات المرتبطين بك."
     : isReader
-      ? "عرض الوثائق المعتمدة فقط ضمن صلاحيات القراءة."
+      ? "الوثائق المعتمدة المتاحة للقراءة مع أدوات بحث مبسطة."
       : "عرض حالة الوثائق مع أدوات تصفية وترتيب.";
 
   const [documentTypes, setDocumentTypes] = useState([]);
@@ -78,27 +78,30 @@ export function DocumentsListPage() {
           message="يمكنك تصفح الوثائق المعلقة والمرفوضة والمعتمدة ضمن نطاقك فقط، دون صلاحيات تعديل المحتوى."
         />
       ) : null}
-      {isReader ? (
-        <AlertMessage
-          type="info"
-          message="يمكنك تصفح الوثائق المعتمدة فقط، وجميع نتائج البحث تبقى ضمن هذا النطاق."
-        />
-      ) : null}
-
       <FilterSection>
         <input
-          placeholder="بحث: رقم الوثيقة / اسم الوثيقة / رقم الإضبارة / المسار"
-          aria-label="بحث: رقم الوثيقة / اسم الوثيقة / رقم الإضبارة / المسار"
+          placeholder={
+            isReader
+              ? "بحث: رقم الوثيقة / اسم الوثيقة / رقم الإضبارة"
+              : "بحث: رقم الوثيقة / اسم الوثيقة / رقم الإضبارة / المسار"
+          }
+          aria-label={
+            isReader
+              ? "بحث: رقم الوثيقة / اسم الوثيقة / رقم الإضبارة"
+              : "بحث: رقم الوثيقة / اسم الوثيقة / رقم الإضبارة / المسار"
+          }
           value={filters.search}
           onChange={(event) => onFilterChange("search", event.target.value)}
         />
-        <select value={filters.status} onChange={(event) => onFilterChange("status", event.target.value)}>
-          <option value="">{isReader ? "المعتمدة فقط" : "كل الحالات"}</option>
-          {!isAuditor && !isReader ? <option value="draft">draft</option> : null}
-          {!isReader ? <option value="pending">pending</option> : null}
-          <option value="approved">approved</option>
-          {!isReader ? <option value="rejected">rejected</option> : null}
-        </select>
+        {!isReader ? (
+          <select value={filters.status} onChange={(event) => onFilterChange("status", event.target.value)}>
+            <option value="">كل الحالات</option>
+            {!isAuditor ? <option value="draft">draft</option> : null}
+            <option value="pending">pending</option>
+            <option value="approved">approved</option>
+            <option value="rejected">rejected</option>
+          </select>
+        ) : null}
         <select value={filters.doc_type} onChange={(event) => onFilterChange("doc_type", event.target.value)}>
           <option value="">كل الأنواع</option>
           {documentTypes.map((docType) => (
@@ -112,25 +115,34 @@ export function DocumentsListPage() {
           value={filters.dossier}
           onChange={(event) => onFilterChange("dossier", event.target.value)}
         />
-        <input
-          placeholder="أنشأها المستخدم (اسم أو id)"
-          value={filters.created_by}
-          onChange={(event) => onFilterChange("created_by", event.target.value)}
-        />
-        <input
-          placeholder="راجعها المستخدم (اسم أو id)"
-          value={filters.reviewed_by}
-          onChange={(event) => onFilterChange("reviewed_by", event.target.value)}
-        />
-        <select value={filters.ordering} onChange={(event) => onFilterChange("ordering", event.target.value)}>
-          <option value="">الترتيب الافتراضي (الأحدث)</option>
-          <option value="status">status تصاعدي</option>
-          <option value="-status">status تنازلي</option>
-          <option value="created_at">created_at تصاعدي</option>
-          <option value="-created_at">created_at تنازلي</option>
-          <option value="reviewed_at">reviewed_at تصاعدي</option>
-          <option value="-reviewed_at">reviewed_at تنازلي</option>
-        </select>
+        {!isReader ? (
+          <>
+            <input
+              placeholder="أنشأها المستخدم (اسم أو id)"
+              value={filters.created_by}
+              onChange={(event) => onFilterChange("created_by", event.target.value)}
+            />
+            <input
+              placeholder="راجعها المستخدم (اسم أو id)"
+              value={filters.reviewed_by}
+              onChange={(event) => onFilterChange("reviewed_by", event.target.value)}
+            />
+            <select value={filters.ordering} onChange={(event) => onFilterChange("ordering", event.target.value)}>
+              <option value="">الترتيب الافتراضي (الأحدث)</option>
+              <option value="status">status تصاعدي</option>
+              <option value="-status">status تنازلي</option>
+              <option value="created_at">created_at تصاعدي</option>
+              <option value="-created_at">created_at تنازلي</option>
+              <option value="reviewed_at">reviewed_at تصاعدي</option>
+              <option value="-reviewed_at">reviewed_at تنازلي</option>
+            </select>
+          </>
+        ) : (
+          <select value={filters.ordering} onChange={(event) => onFilterChange("ordering", event.target.value)}>
+            <option value="">الأحدث وفق تاريخ الإنشاء</option>
+            <option value="created_at">الأقدم وفق تاريخ الإنشاء</option>
+          </select>
+        )}
       </FilterSection>
 
       <AlertMessage type="error" message={error} />

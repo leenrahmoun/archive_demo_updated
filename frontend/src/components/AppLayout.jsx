@@ -6,7 +6,7 @@ const CREATE_ROLES = new Set(["admin", "data_entry"]);
 const AUDIT_ROLES = new Set(["admin"]);
 const ADMIN_ROLES = new Set(["admin"]);
 const REVIEW_QUEUE_ROLES = new Set(["auditor", "admin"]);
-const DELETED_DOCUMENT_ROLES = new Set(["admin", "data_entry"]);
+const DELETED_DOCUMENT_ROLES = new Set(["admin"]);
 
 const ROLE_LABELS = {
   admin: "مدير النظام",

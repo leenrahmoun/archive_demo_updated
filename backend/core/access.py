@@ -37,6 +37,148 @@ AUDIT_ENTITY_LABELS = {
 }
 
 
+def _is_authenticated_user(user):
+    return bool(user and user.is_authenticated)
+
+
+def _is_document_owner(user, document):
+    return _is_authenticated_user(user) and document.created_by_id == user.id
+
+
+def _is_assigned_auditor_for_document(user, document):
+    return _is_authenticated_user(user) and user.role == UserRole.AUDITOR and document.created_by.assigned_auditor_id == user.id
+
+
+def get_document_edit_denial_reason(user, document):
+    if not _is_authenticated_user(user):
+        return "You do not have permission to edit this document."
+    if user.role == UserRole.ADMIN:
+        pass
+    elif user.role == UserRole.DATA_ENTRY and _is_document_owner(user, document):
+        pass
+    else:
+        return "You do not have permission to edit this document."
+    if document.is_deleted:
+        return "Soft-deleted documents cannot be modified."
+    if document.status not in {DocumentStatus.DRAFT, DocumentStatus.REJECTED}:
+        return "Document can only be edited when it is in draft or rejected status."
+    return None
+
+
+def can_view_document(user, document, *, include_deleted=False):
+    if document is None:
+        return False
+    if document.is_deleted and not include_deleted:
+        return False
+    return filter_document_visibility_queryset(
+        Document.objects.filter(pk=document.pk),
+        user,
+        deleted_state=document.is_deleted,
+    ).exists()
+
+
+def can_edit_document(user, document):
+    return get_document_edit_denial_reason(user, document) is None
+
+
+def get_document_submit_denial_reason(user, document):
+    if not _is_authenticated_user(user):
+        return "You do not have permission to submit documents."
+    if user.role == UserRole.ADMIN:
+        pass
+    elif user.role == UserRole.DATA_ENTRY:
+        if not _is_document_owner(user, document):
+            return "You do not have permission to submit this document."
+        if user.assigned_auditor_id is None:
+            return "Data entry users must be assigned to an auditor before submitting documents."
+    else:
+        return "You do not have permission to submit documents."
+    if document.status not in {DocumentStatus.DRAFT, DocumentStatus.REJECTED}:
+        return "Only draft or rejected documents can be submitted."
+    if document.is_deleted:
+        return "Deleted documents cannot be submitted."
+    return None
+
+
+def can_submit_document(user, document):
+    return get_document_submit_denial_reason(user, document) is None
+
+
+def get_document_approve_denial_reason(user, document):
+    if not _is_authenticated_user(user):
+        return "You do not have permission to approve documents."
+    if user.role == UserRole.ADMIN:
+        pass
+    elif user.role == UserRole.AUDITOR:
+        if not _is_assigned_auditor_for_document(user, document):
+            return "You do not have access to review this document."
+    else:
+        return "You do not have permission to approve documents."
+    if document.status != DocumentStatus.PENDING:
+        return "Only pending documents can be approved."
+    if document.is_deleted:
+        return "Deleted documents cannot be approved."
+    return None
+
+
+def can_approve_document(user, document):
+    return get_document_approve_denial_reason(user, document) is None
+
+
+def get_document_reject_denial_reason(user, document):
+    if not _is_authenticated_user(user):
+        return "You do not have permission to reject documents."
+    if user.role == UserRole.ADMIN:
+        pass
+    elif user.role == UserRole.AUDITOR:
+        if not _is_assigned_auditor_for_document(user, document):
+            return "You do not have access to review this document."
+    else:
+        return "You do not have permission to reject documents."
+    if document.status != DocumentStatus.PENDING:
+        return "Only pending documents can be rejected."
+    if document.is_deleted:
+        return "Deleted documents cannot be rejected."
+    return None
+
+
+def can_reject_document(user, document):
+    return get_document_reject_denial_reason(user, document) is None
+
+
+def get_document_soft_delete_denial_reason(user, document):
+    if not _is_authenticated_user(user):
+        return "You do not have permission to soft-delete documents."
+    if user.role == UserRole.ADMIN:
+        pass
+    elif user.role == UserRole.DATA_ENTRY:
+        if not _is_document_owner(user, document):
+            return "You do not have permission to soft-delete this document."
+    else:
+        return "You do not have permission to soft-delete documents."
+    if document.is_deleted:
+        return "Document is already deleted."
+    if user.role == UserRole.DATA_ENTRY and document.status != DocumentStatus.DRAFT:
+        return "Data entry can soft-delete draft documents only."
+    return None
+
+
+def can_soft_delete_document(user, document):
+    return get_document_soft_delete_denial_reason(user, document) is None
+
+
+def get_document_restore_denial_reason(user, document):
+    if not _is_authenticated_user(user) or user.role != UserRole.ADMIN:
+        return "You do not have permission to restore documents."
+    if not document.is_deleted:
+        return "Document is not deleted."
+    return None
+
+
+def can_restore_document(user, document):
+    return get_document_restore_denial_reason(user, document) is None
+
+
 def _get_clean_param(params, key):
     if params is None:
         return None
@@ -217,26 +359,33 @@ def apply_audit_log_search(queryset, params):
     )
 
 
-def get_document_visibility_queryset(user, *, deleted_state=False):
-    if not user or not user.is_authenticated:
-        return Document.objects.none()
+def filter_document_visibility_queryset(queryset, user, *, deleted_state=False):
+    if not _is_authenticated_user(user):
+        return queryset.none()
 
-    queryset = Document.objects.filter(is_deleted=deleted_state)
+    queryset = queryset.filter(is_deleted=deleted_state)
+    if deleted_state:
+        if user.role == UserRole.ADMIN:
+            return queryset
+        return queryset.none()
 
     if user.role == UserRole.ADMIN:
         return queryset
     if user.role == UserRole.DATA_ENTRY:
         return queryset.filter(created_by=user)
-    if deleted_state:
-        return Document.objects.none()
     if user.role == UserRole.AUDITOR:
-        return queryset.filter(
-            created_by__assigned_auditor=user,
-            status__in=AUDITOR_VISIBLE_DOCUMENT_STATUSES,
+        return filter_document_review_scope_queryset(
+            queryset,
+            user,
+            allowed_statuses=AUDITOR_VISIBLE_DOCUMENT_STATUSES,
         )
     if user.role == UserRole.READER:
         return queryset.filter(status=DocumentStatus.APPROVED)
-    return Document.objects.none()
+    return queryset.none()
+
+
+def get_document_visibility_queryset(user, *, deleted_state=False):
+    return filter_document_visibility_queryset(Document.objects.all(), user, deleted_state=deleted_state)
 
 
 def get_dossier_visibility_queryset(user):
@@ -351,11 +500,11 @@ def apply_dossier_advanced_filters(queryset, params, user):
 
 
 def get_document_queryset_for_user(user, *, deleted_state=False):
-    return get_document_visibility_queryset(user, deleted_state=deleted_state)
+    return filter_document_visibility_queryset(Document.objects.all(), user, deleted_state=deleted_state)
 
 
 def get_document_detail_queryset_for_user(user, *, deleted_state=False):
-    return get_document_visibility_queryset(user, deleted_state=deleted_state)
+    return filter_document_visibility_queryset(Document.objects.all(), user, deleted_state=deleted_state)
 
 
 def get_deleted_document_visibility_queryset(user):
@@ -366,22 +515,57 @@ def get_deleted_document_detail_queryset_for_user(user):
     return get_document_detail_queryset_for_user(user, deleted_state=True)
 
 
-def get_document_review_scope_queryset_for_user(user):
-    if not user or not user.is_authenticated:
+def filter_document_review_scope_queryset(queryset, user, *, allowed_statuses=None):
+    if not _is_authenticated_user(user):
+        return queryset.none()
+
+    queryset = queryset.filter(is_deleted=False)
+    if allowed_statuses is not None:
+        queryset = queryset.filter(status__in=tuple(allowed_statuses))
+
+    if user.role == UserRole.ADMIN:
+        return queryset
+    if user.role == UserRole.AUDITOR:
+        return queryset.filter(created_by__assigned_auditor=user)
+    return queryset.none()
+
+
+def get_document_submit_scope_queryset_for_user(user):
+    if not _is_authenticated_user(user):
         return Document.objects.none()
     if user.role == UserRole.ADMIN:
         return Document.objects.filter(is_deleted=False)
-    if user.role == UserRole.AUDITOR:
-        return Document.objects.filter(is_deleted=False, created_by__assigned_auditor=user)
+    if user.role == UserRole.DATA_ENTRY:
+        return Document.objects.filter(is_deleted=False, created_by=user)
     return Document.objects.none()
 
 
+def get_document_soft_delete_scope_queryset_for_user(user):
+    if not _is_authenticated_user(user):
+        return Document.objects.none()
+    if user.role == UserRole.ADMIN:
+        return Document.objects.filter(is_deleted=False)
+    if user.role == UserRole.DATA_ENTRY:
+        return Document.objects.filter(is_deleted=False, created_by=user)
+    return Document.objects.none()
+
+
+def get_document_restore_scope_queryset_for_user(user):
+    if not _is_authenticated_user(user) or user.role != UserRole.ADMIN:
+        return Document.objects.none()
+    return Document.objects.filter(is_deleted=True)
+
+
+def get_document_review_scope_queryset_for_user(user):
+    return filter_document_review_scope_queryset(Document.objects.all(), user)
+
+
 def get_review_queue_queryset_for_user(user):
-    if not user or not user.is_authenticated:
-        return Document.objects.none()
-    if user.role not in {UserRole.ADMIN, UserRole.AUDITOR}:
-        return Document.objects.none()
-    return get_document_visibility_queryset(user).filter(status=DocumentStatus.PENDING)
+    return filter_document_review_scope_queryset(
+        Document.objects.all(),
+        user,
+        allowed_statuses=(DocumentStatus.PENDING,),
+    )
 
 
 def get_dossier_queryset_for_user(user):

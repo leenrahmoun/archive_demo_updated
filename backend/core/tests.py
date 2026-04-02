@@ -286,6 +286,259 @@ class AuthAndLookupApiTests(APITestCase):
         self.assertEqual(set(response.data[0].keys()), {"id", "name"})
 
 
+class JwtLifecycleApiTests(APITestCase):
+    def setUp(self):
+        self.password = "pass12345"
+        self.user = User.objects.create_user(
+            username="jwt_admin",
+            password=self.password,
+            role=UserRole.ADMIN,
+            first_name="Jwt",
+            last_name="Admin",
+            email="jwt-admin@example.com",
+        )
+
+    def login(self):
+        response = self.client.post(
+            "/api/auth/login/",
+            {"username": self.user.username, "password": self.password},
+            format="json",
+        )
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        return response
+
+    def refresh(self, refresh_token):
+        self.client.credentials()
+        return self.client.post("/api/auth/refresh/", {"refresh": refresh_token}, format="json")
+
+    def test_simplejwt_hardening_settings_are_enabled(self):
+        self.assertEqual(settings.SIMPLE_JWT["ACCESS_TOKEN_LIFETIME"], timedelta(minutes=5))
+        self.assertTrue(settings.SIMPLE_JWT["ROTATE_REFRESH_TOKENS"])
+        self.assertTrue(settings.SIMPLE_JWT["BLACKLIST_AFTER_ROTATION"])
+
+    def test_login_returns_tokens_and_access_token_works_on_protected_endpoint(self):
+        response = self.login()
+
+        self.assertIn("access", response.data)
+        self.assertIn("refresh", response.data)
+
+        self.client.credentials(HTTP_AUTHORIZATION=f"Bearer {response.data['access']}")
+        me_response = self.client.get("/api/auth/me/")
+
+        self.assertEqual(me_response.status_code, status.HTTP_200_OK)
+        self.assertEqual(me_response.data["username"], self.user.username)
+        self.assertEqual(me_response.data["role"], UserRole.ADMIN)
+
+    def test_refresh_returns_new_access_and_rotated_refresh_token(self):
+        login_response = self.login()
+        original_refresh = login_response.data["refresh"]
+        original_access = login_response.data["access"]
+
+        refresh_response = self.refresh(original_refresh)
+
+        self.assertEqual(refresh_response.status_code, status.HTTP_200_OK)
+        self.assertIn("access", refresh_response.data)
+        self.assertIn("refresh", refresh_response.data)
+        self.assertNotEqual(refresh_response.data["access"], original_access)
+        self.assertNotEqual(refresh_response.data["refresh"], original_refresh)
+
+        outstanding = OutstandingToken.objects.get(token=original_refresh)
+        self.assertTrue(BlacklistedToken.objects.filter(token=outstanding).exists())
+
+    def test_old_refresh_token_becomes_unusable_after_rotation(self):
+        login_response = self.login()
+        original_refresh = login_response.data["refresh"]
+
+        first_refresh_response = self.refresh(original_refresh)
+        self.assertEqual(first_refresh_response.status_code, status.HTTP_200_OK)
+        rotated_refresh = first_refresh_response.data["refresh"]
+
+        reused_old_refresh_response = self.refresh(original_refresh)
+        self.assertEqual(reused_old_refresh_response.status_code, status.HTTP_401_UNAUTHORIZED)
+
+        rotated_refresh_response = self.refresh(rotated_refresh)
+        self.assertEqual(rotated_refresh_response.status_code, status.HTTP_200_OK)
+        self.assertIn("access", rotated_refresh_response.data)
+        self.assertIn("refresh", rotated_refresh_response.data)
+
+    def test_logout_invalidates_latest_refresh_token_after_rotation(self):
+        login_response = self.login()
+        first_refresh = login_response.data["refresh"]
+
+        refresh_response = self.refresh(first_refresh)
+        self.assertEqual(refresh_response.status_code, status.HTTP_200_OK)
+        latest_refresh = refresh_response.data["refresh"]
+        latest_access = refresh_response.data["access"]
+
+        self.client.credentials(HTTP_AUTHORIZATION=f"Bearer {latest_access}")
+        logout_response = self.client.post("/api/auth/logout/", {"refresh": latest_refresh}, format="json")
+
+        self.assertEqual(logout_response.status_code, status.HTTP_200_OK)
+        outstanding = OutstandingToken.objects.get(token=latest_refresh)
+        self.assertTrue(BlacklistedToken.objects.filter(token=outstanding).exists())
+
+        reuse_after_logout_response = self.refresh(latest_refresh)
+        self.assertEqual(reuse_after_logout_response.status_code, status.HTTP_401_UNAUTHORIZED)
+
+
+class AccountStatusAuthEnforcementApiTests(APITestCase):
+    def setUp(self):
+        self.password = "pass12345"
+        self.user = User.objects.create_user(
+            username="inactive_guard_admin",
+            password=self.password,
+            role=UserRole.ADMIN,
+            first_name="Inactive",
+            last_name="Guard",
+            email="inactive-guard@example.com",
+        )
+
+    def login(self):
+        return self.client.post(
+            "/api/auth/login/",
+            {"username": self.user.username, "password": self.password},
+            format="json",
+        )
+
+    def refresh(self, refresh_token):
+        self.client.credentials()
+        return self.client.post("/api/auth/refresh/", {"refresh": refresh_token}, format="json")
+
+    def test_inactive_user_cannot_log_in(self):
+        self.user.is_active = False
+        self.user.save(update_fields=["is_active"])
+
+        response = self.login()
+
+        self.assertEqual(response.status_code, status.HTTP_401_UNAUTHORIZED)
+
+    def test_inactive_user_cannot_refresh_after_tokens_were_issued(self):
+        login_response = self.login()
+        self.assertEqual(login_response.status_code, status.HTTP_200_OK)
+
+        self.user.is_active = False
+        self.user.save(update_fields=["is_active"])
+
+        refresh_response = self.refresh(login_response.data["refresh"])
+
+        self.assertEqual(refresh_response.status_code, status.HTTP_401_UNAUTHORIZED)
+
+    def test_inactive_user_cannot_access_protected_endpoint_with_existing_access_token(self):
+        login_response = self.login()
+        self.assertEqual(login_response.status_code, status.HTTP_200_OK)
+
+        self.user.is_active = False
+        self.user.save(update_fields=["is_active"])
+
+        self.client.credentials(HTTP_AUTHORIZATION=f"Bearer {login_response.data['access']}")
+        me_response = self.client.get("/api/auth/me/")
+
+        self.assertEqual(me_response.status_code, status.HTTP_401_UNAUTHORIZED)
+
+    def test_active_user_still_can_log_in_refresh_and_access_protected_endpoint(self):
+        login_response = self.login()
+
+        self.assertEqual(login_response.status_code, status.HTTP_200_OK)
+        self.assertIn("access", login_response.data)
+        self.assertIn("refresh", login_response.data)
+
+        self.client.credentials(HTTP_AUTHORIZATION=f"Bearer {login_response.data['access']}")
+        me_response = self.client.get("/api/auth/me/")
+        self.assertEqual(me_response.status_code, status.HTTP_200_OK)
+        self.assertEqual(me_response.data["username"], self.user.username)
+
+        refresh_response = self.refresh(login_response.data["refresh"])
+        self.assertEqual(refresh_response.status_code, status.HTTP_200_OK)
+        self.assertIn("access", refresh_response.data)
+        self.assertIn("refresh", refresh_response.data)
+
+
+class AuthSecurityAuditLoggingApiTests(APITestCase):
+    def setUp(self):
+        self.password = "pass12345"
+        self.user = User.objects.create_user(
+            username="audit_auth_admin",
+            password=self.password,
+            role=UserRole.ADMIN,
+            first_name="Audit",
+            last_name="Auth",
+            email="audit-auth@example.com",
+        )
+
+    def login(self, *, password=None):
+        return self.client.post(
+            "/api/auth/login/",
+            {"username": self.user.username, "password": password or self.password},
+            format="json",
+        )
+
+    def refresh(self, refresh_token):
+        self.client.credentials()
+        return self.client.post("/api/auth/refresh/", {"refresh": refresh_token}, format="json")
+
+    def test_login_success_creates_security_audit_log(self):
+        response = self.login()
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        audit_log = AuditLog.objects.get(action=AuditAction.LOGIN, entity_type="user", entity_id=self.user.id)
+        self.assertEqual(audit_log.user_id, self.user.id)
+        self.assertEqual(audit_log.new_values["message"], "Successful login.")
+        self.assertEqual(audit_log.new_values["username"], self.user.username)
+
+    def test_login_failure_for_existing_user_creates_security_audit_log(self):
+        response = self.login(password="wrong-password")
+
+        self.assertEqual(response.status_code, status.HTTP_401_UNAUTHORIZED)
+        audit_log = AuditLog.objects.get(action=AuditAction.LOGIN_FAILED, entity_type="user", entity_id=self.user.id)
+        self.assertEqual(audit_log.user_id, self.user.id)
+        self.assertEqual(audit_log.new_values["message"], "Failed login attempt.")
+        self.assertEqual(audit_log.new_values["username"], self.user.username)
+
+    def test_logout_creates_security_audit_log(self):
+        refresh = RefreshToken.for_user(self.user)
+        self.client.force_authenticate(user=self.user)
+
+        response = self.client.post("/api/auth/logout/", {"refresh": str(refresh)}, format="json")
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        audit_log = AuditLog.objects.get(action=AuditAction.LOGOUT, entity_type="user", entity_id=self.user.id)
+        self.assertEqual(audit_log.user_id, self.user.id)
+        self.assertEqual(audit_log.new_values["message"], "Successful logout.")
+
+    def test_refresh_failure_for_inactive_user_creates_security_audit_log(self):
+        login_response = self.login()
+        self.assertEqual(login_response.status_code, status.HTTP_200_OK)
+
+        self.user.is_active = False
+        self.user.save(update_fields=["is_active"])
+
+        refresh_response = self.refresh(login_response.data["refresh"])
+
+        self.assertEqual(refresh_response.status_code, status.HTTP_401_UNAUTHORIZED)
+        audit_log = AuditLog.objects.get(action=AuditAction.REFRESH_FAILED, entity_type="user", entity_id=self.user.id)
+        self.assertEqual(audit_log.user_id, self.user.id)
+        self.assertEqual(audit_log.new_values["message"], "Refresh denied for inactive account.")
+
+    def test_refresh_failure_for_blacklisted_token_creates_security_audit_log(self):
+        login_response = self.login()
+        self.assertEqual(login_response.status_code, status.HTTP_200_OK)
+        original_refresh = login_response.data["refresh"]
+
+        first_refresh_response = self.refresh(original_refresh)
+        self.assertEqual(first_refresh_response.status_code, status.HTTP_200_OK)
+
+        reuse_response = self.refresh(original_refresh)
+
+        self.assertEqual(reuse_response.status_code, status.HTTP_401_UNAUTHORIZED)
+        audit_log = AuditLog.objects.filter(
+            action=AuditAction.REFRESH_FAILED,
+            entity_type="user",
+            entity_id=self.user.id,
+        ).latest("id")
+        self.assertEqual(audit_log.user_id, self.user.id)
+        self.assertEqual(audit_log.new_values["message"], "Refresh token was rejected.")
+
+
 class AdminDocumentTypeManagementApiTests(APITestCase):
     def setUp(self):
         self.admin = User.objects.create_user(username="types_admin", password="pass12345", role=UserRole.ADMIN)
@@ -1132,6 +1385,72 @@ class EmergencySuperAdminVisibilityTests(APITestCase):
         self.assertEqual(response.data["user_activity"]["total_active_users"], 1)
         self.assertEqual(response.data["recent_activity"]["latest_audit_log_events"], [])
 
+    def test_super_admin_document_review_activity_is_included_in_dashboard_admin_review_stats(self):
+        data_entry = User.objects.create_user(
+            username="ops_entry_dashboard",
+            password="pass12345",
+            role=UserRole.DATA_ENTRY,
+        )
+        doc_type = DocumentType.objects.create(
+            name="Emergency Dashboard Type",
+            slug="emergency-dashboard-type",
+            group_name="dashboard",
+            display_order=1,
+            is_active=True,
+        )
+        dossier = Dossier.objects.create(
+            file_number="OPS-DASH-001",
+            full_name="Dashboard Emergency Dossier",
+            national_id="12345678901",
+            personal_id="123456",
+            room_number="1",
+            column_number="1",
+            shelf_number="1",
+            created_by=data_entry,
+        )
+        document = Document.objects.create(
+            dossier=dossier,
+            doc_type=doc_type,
+            doc_number="OPS-DASH-DOC-1",
+            doc_name="Emergency Review Document",
+            file_path="archive/emergency-dashboard.pdf",
+            file_size_kb=100,
+            mime_type="application/pdf",
+            status=DocumentStatus.APPROVED,
+            created_by=data_entry,
+            reviewed_by=self.super_admin,
+            reviewed_at=timezone.now(),
+        )
+        approve_log = AuditLog.objects.create(
+            user=self.super_admin,
+            action=AuditAction.APPROVE,
+            entity_type="document",
+            entity_id=document.id,
+            old_values={"status": DocumentStatus.PENDING},
+            new_values={"status": DocumentStatus.APPROVED},
+        )
+        reject_log = AuditLog.objects.create(
+            user=self.super_admin,
+            action=AuditAction.REJECT,
+            entity_type="document",
+            entity_id=document.id,
+            old_values={"status": DocumentStatus.PENDING},
+            new_values={"status": DocumentStatus.REJECTED, "rejection_reason": "مراجعة طارئة"},
+        )
+
+        response = self.client.get("/api/admin/dashboard/")
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response.data["summary"]["total_active_users"], 2)
+        self.assertEqual(response.data["user_activity"]["total_active_users"], 2)
+        admin_review_activity = response.data["employee_tracking"]["admin_review_activity"]
+        self.assertEqual(admin_review_activity["approved_by_admin_count"], 1)
+        self.assertEqual(admin_review_activity["rejected_by_admin_count"], 1)
+        self.assertEqual(
+            admin_review_activity["latest_admin_review_at"],
+            reject_log.created_at.isoformat().replace("+00:00", "Z"),
+        )
+
     def test_super_admin_user_account_audit_logs_are_hidden_from_regular_audit_log_views(self):
         list_response = self.client.get("/api/audit-logs/")
         detail_response = self.client.get(f"/api/audit-logs/{self.super_admin_audit_log.id}/")
@@ -1212,6 +1531,11 @@ class DocumentWorkflowApiTests(APITestCase):
     def setUp(self):
         self.admin = User.objects.create_user(username="admin", password="pass12345", role=UserRole.ADMIN)
         self.data_entry = User.objects.create_user(username="entry2", password="pass12345", role=UserRole.DATA_ENTRY)
+        self.other_data_entry = User.objects.create_user(
+            username="entry2_other",
+            password="pass12345",
+            role=UserRole.DATA_ENTRY,
+        )
         self.auditor = User.objects.create_user(username="auditor", password="pass12345", role=UserRole.AUDITOR)
         self.other_auditor = User.objects.create_user(username="auditor_other", password="pass12345", role=UserRole.AUDITOR)
         self.reader = User.objects.create_user(username="reader", password="pass12345", role=UserRole.READER)
@@ -1307,6 +1631,47 @@ class DocumentWorkflowApiTests(APITestCase):
         response = self.client.post(f"/api/documents/{self.document.id}/submit/", {}, format="json")
         self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
 
+    def test_data_entry_cannot_submit_other_users_document_even_with_known_id(self):
+        other_dossier = Dossier.objects.create(
+            file_number="D-101",
+            full_name="Other Workflow User",
+            national_id="N-101",
+            personal_id="P-101",
+            room_number="4",
+            column_number="5",
+            shelf_number="6",
+            created_by=self.other_data_entry,
+        )
+        other_document = Document.objects.create(
+            dossier=other_dossier,
+            doc_type=self.doc_type,
+            doc_number="DOC-101",
+            doc_name="Other workflow doc",
+            file_path="archive/doc-101.pdf",
+            file_size_kb=150,
+            mime_type="application/pdf",
+            status=DocumentStatus.DRAFT,
+            created_by=self.other_data_entry,
+        )
+
+        self.client.force_authenticate(user=self.data_entry)
+        response = self.client.post(f"/api/documents/{other_document.id}/submit/", {}, format="json")
+
+        self.assertEqual(response.status_code, status.HTTP_404_NOT_FOUND)
+        other_document.refresh_from_db()
+        self.assertEqual(other_document.status, DocumentStatus.DRAFT)
+        denied_log = AuditLog.objects.get(action=AuditAction.ACCESS_DENIED, entity_id=other_document.id)
+        self.assertEqual(denied_log.user_id, self.data_entry.id)
+        self.assertEqual(denied_log.entity_type, "document")
+        self.assertEqual(denied_log.new_values["workflow_action"], "submit")
+
+    def test_approve_requires_pending_status(self):
+        self.client.force_authenticate(user=self.auditor)
+        response = self.client.post(f"/api/documents/{self.document.id}/approve/", {}, format="json")
+
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertEqual(response.data["detail"], "Only pending documents can be approved.")
+
     def test_soft_delete_marks_without_physical_removal(self):
         self.client.force_authenticate(user=self.data_entry)
         response = self.client.post(f"/api/documents/{self.document.id}/soft-delete/", {}, format="json")
@@ -1342,14 +1707,18 @@ class DocumentWorkflowApiTests(APITestCase):
 
         self.client.force_authenticate(user=self.data_entry)
         response = self.client.post(f"/api/documents/{self.document.id}/restore/", {}, format="json")
-        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
         self.document.refresh_from_db()
-        self.assertFalse(self.document.is_deleted)
+        self.assertTrue(self.document.is_deleted)
 
     def test_permissions_reader_cannot_call_workflow_actions(self):
         self.client.force_authenticate(user=self.reader)
         response = self.client.post(f"/api/documents/{self.document.id}/submit/", {}, format="json")
         self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
+        denied_log = AuditLog.objects.get(action=AuditAction.ACCESS_DENIED, entity_id=self.document.id)
+        self.assertEqual(denied_log.user_id, self.reader.id)
+        self.assertEqual(denied_log.new_values["workflow_action"], "submit")
+        self.assertIn("Only data entry users can submit documents.", denied_log.new_values["reason"])
 
     def test_reader_cannot_restore_deleted_document(self):
         self.document.is_deleted = True
@@ -1392,6 +1761,72 @@ class DocumentWorkflowApiTests(APITestCase):
         self.client.force_authenticate(user=self.other_auditor)
         response = self.client.post(f"/api/documents/{self.document.id}/approve/", {}, format="json")
         self.assertEqual(response.status_code, status.HTTP_404_NOT_FOUND)
+        denied_log = AuditLog.objects.get(action=AuditAction.ACCESS_DENIED, entity_id=self.document.id)
+        self.assertEqual(denied_log.user_id, self.other_auditor.id)
+        self.assertEqual(denied_log.new_values["workflow_action"], "approve")
+        self.assertIn("outside the permitted workflow scope", denied_log.new_values["reason"])
+
+    def test_auditor_cannot_reject_document_outside_assignment(self):
+        self.other_data_entry.assigned_auditor = self.other_auditor
+        self.other_data_entry.save()
+        other_dossier = Dossier.objects.create(
+            file_number="D-102",
+            full_name="Reject Scope User",
+            national_id="N-102",
+            personal_id="P-102",
+            room_number="7",
+            column_number="8",
+            shelf_number="9",
+            created_by=self.other_data_entry,
+        )
+        other_document = Document.objects.create(
+            dossier=other_dossier,
+            doc_type=self.doc_type,
+            doc_number="DOC-102",
+            doc_name="Reject scope doc",
+            file_path="archive/doc-102.pdf",
+            file_size_kb=150,
+            mime_type="application/pdf",
+            status=DocumentStatus.PENDING,
+            created_by=self.other_data_entry,
+        )
+
+        self.client.force_authenticate(user=self.auditor)
+        response = self.client.post(
+            f"/api/documents/{other_document.id}/reject/",
+            {"rejection_reason": "Out of scope"},
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_404_NOT_FOUND)
+        other_document.refresh_from_db()
+        self.assertEqual(other_document.status, DocumentStatus.PENDING)
+        self.assertIsNone(other_document.reviewed_by)
+
+    def test_reject_requires_pending_status(self):
+        self.document.status = DocumentStatus.REJECTED
+        self.document.rejection_reason = "Already rejected"
+        self.document.save(update_fields=["status", "rejection_reason", "updated_at"])
+
+        self.client.force_authenticate(user=self.auditor)
+        response = self.client.post(
+            f"/api/documents/{self.document.id}/reject/",
+            {"rejection_reason": "Still rejected"},
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertEqual(response.data["detail"], "Only pending documents can be rejected.")
+
+    def test_soft_delete_pending_document_blocked_for_data_entry(self):
+        self.document.status = DocumentStatus.PENDING
+        self.document.save(update_fields=["status", "updated_at"])
+
+        self.client.force_authenticate(user=self.data_entry)
+        response = self.client.post(f"/api/documents/{self.document.id}/soft-delete/", {}, format="json")
+
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertEqual(response.data["detail"], "Data entry can soft-delete draft documents only.")
 
     def test_submit_requires_assigned_auditor_for_data_entry(self):
         self.data_entry.assigned_auditor = None
@@ -1404,6 +1839,77 @@ class DocumentWorkflowApiTests(APITestCase):
             response.data["detail"],
             "Data entry users must be assigned to an auditor before submitting documents.",
         )
+
+    def test_admin_can_approve_document_outside_auditor_assignment(self):
+        self.other_data_entry.assigned_auditor = self.other_auditor
+        self.other_data_entry.save()
+        other_dossier = Dossier.objects.create(
+            file_number="D-103",
+            full_name="Admin Approval Scope User",
+            national_id="N-103",
+            personal_id="P-103",
+            room_number="10",
+            column_number="11",
+            shelf_number="12",
+            created_by=self.other_data_entry,
+        )
+        other_document = Document.objects.create(
+            dossier=other_dossier,
+            doc_type=self.doc_type,
+            doc_number="DOC-103",
+            doc_name="Admin approval doc",
+            file_path="archive/doc-103.pdf",
+            file_size_kb=150,
+            mime_type="application/pdf",
+            status=DocumentStatus.PENDING,
+            created_by=self.other_data_entry,
+        )
+
+        self.client.force_authenticate(user=self.admin)
+        response = self.client.post(f"/api/documents/{other_document.id}/approve/", {}, format="json")
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        other_document.refresh_from_db()
+        self.assertEqual(other_document.status, DocumentStatus.APPROVED)
+        self.assertEqual(other_document.reviewed_by_id, self.admin.id)
+
+    def test_admin_can_reject_document_outside_auditor_assignment(self):
+        self.other_data_entry.assigned_auditor = self.other_auditor
+        self.other_data_entry.save()
+        other_dossier = Dossier.objects.create(
+            file_number="D-104",
+            full_name="Admin Rejection Scope User",
+            national_id="N-104",
+            personal_id="P-104",
+            room_number="13",
+            column_number="14",
+            shelf_number="15",
+            created_by=self.other_data_entry,
+        )
+        other_document = Document.objects.create(
+            dossier=other_dossier,
+            doc_type=self.doc_type,
+            doc_number="DOC-104",
+            doc_name="Admin rejection doc",
+            file_path="archive/doc-104.pdf",
+            file_size_kb=150,
+            mime_type="application/pdf",
+            status=DocumentStatus.PENDING,
+            created_by=self.other_data_entry,
+        )
+
+        self.client.force_authenticate(user=self.admin)
+        response = self.client.post(
+            f"/api/documents/{other_document.id}/reject/",
+            {"rejection_reason": "Admin review rejection"},
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        other_document.refresh_from_db()
+        self.assertEqual(other_document.status, DocumentStatus.REJECTED)
+        self.assertEqual(other_document.reviewed_by_id, self.admin.id)
+        self.assertEqual(other_document.rejection_reason, "Admin review rejection")
 
 
 class AuditLogApiTests(APITestCase):
@@ -2338,12 +2844,10 @@ class DeletedDocumentListApiTests(APITestCase):
         self.assertEqual(deleted_row["deleted_by_name"], self.admin.username)
         self.assertIsNotNone(deleted_row["deleted_at"])
 
-    def test_data_entry_sees_only_their_deleted_documents(self):
+    def test_data_entry_cannot_access_deleted_documents_list(self):
         self.client.force_authenticate(user=self.data_entry)
         response = self.client.get("/api/documents/deleted/")
-        self.assertEqual(response.status_code, status.HTTP_200_OK)
-        self.assertEqual(response.data["count"], 1)
-        self.assertEqual(response.data["results"][0]["id"], self.deleted_owned.id)
+        self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
 
     def test_admin_can_filter_deleted_documents_by_deleted_by(self):
         self.client.force_authenticate(user=self.admin)
@@ -2360,12 +2864,10 @@ class DeletedDocumentListApiTests(APITestCase):
         self.assertTrue(response.data["is_deleted"])
         self.assertEqual(response.data["deleted_by_name"], self.admin.username)
 
-    def test_data_entry_can_open_own_deleted_document_detail_with_include_deleted_flag(self):
+    def test_data_entry_cannot_open_deleted_document_detail_with_include_deleted_flag(self):
         self.client.force_authenticate(user=self.data_entry)
         response = self.client.get(f"/api/documents/{self.deleted_owned.id}/?include_deleted=true")
-        self.assertEqual(response.status_code, status.HTTP_200_OK)
-        self.assertEqual(response.data["id"], self.deleted_owned.id)
-        self.assertTrue(response.data["is_deleted"])
+        self.assertEqual(response.status_code, status.HTTP_404_NOT_FOUND)
 
     def test_deleted_document_detail_requires_include_deleted_flag(self):
         self.client.force_authenticate(user=self.admin)
@@ -2392,10 +2894,10 @@ class DeletedDocumentListApiTests(APITestCase):
         deleted_ids = {item["id"] for item in deleted_response.data["results"]}
         self.assertNotIn(self.deleted_owned.id, deleted_ids)
 
-    def test_data_entry_cannot_restore_another_users_deleted_document(self):
+    def test_data_entry_cannot_restore_deleted_document(self):
         self.client.force_authenticate(user=self.data_entry)
         response = self.client.post(f"/api/documents/{self.deleted_other.id}/restore/", {}, format="json")
-        self.assertEqual(response.status_code, status.HTTP_404_NOT_FOUND)
+        self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
 
     def test_auditor_cannot_access_deleted_documents_endpoint(self):
         self.client.force_authenticate(user=self.auditor)
@@ -3015,6 +3517,227 @@ class DocumentFileAccessApiTests(TemporaryMediaRootMixin, APITestCase):
         response = self.client.get(f"/api/documents/{document.id}/file/")
 
         self.assertEqual(response.status_code, status.HTTP_404_NOT_FOUND)
+
+
+class DocumentVisibilityConsistencyApiTests(TemporaryMediaRootMixin, APITestCase):
+    def setUp(self):
+        super().setUp()
+        self.admin = User.objects.create_user(username="cons_admin", password="pass12345", role=UserRole.ADMIN)
+        self.data_entry = User.objects.create_user(username="cons_entry", password="pass12345", role=UserRole.DATA_ENTRY)
+        self.other_data_entry = User.objects.create_user(
+            username="cons_entry_other",
+            password="pass12345",
+            role=UserRole.DATA_ENTRY,
+        )
+        self.auditor = User.objects.create_user(username="cons_auditor", password="pass12345", role=UserRole.AUDITOR)
+        self.other_auditor = User.objects.create_user(
+            username="cons_auditor_other",
+            password="pass12345",
+            role=UserRole.AUDITOR,
+        )
+        self.reader = User.objects.create_user(username="cons_reader", password="pass12345", role=UserRole.READER)
+
+        self.data_entry.assigned_auditor = self.auditor
+        self.data_entry.save()
+        self.other_data_entry.assigned_auditor = self.other_auditor
+        self.other_data_entry.save()
+
+        self.doc_type = DocumentType.objects.create(
+            name="Consistency Visibility Doc",
+            slug="consistency-visibility-doc",
+            group_name="visibility",
+            display_order=1,
+            is_active=True,
+        )
+        self.entry_dossier = Dossier.objects.create(
+            file_number="CONS-ENTRY",
+            full_name="Consistency Entry",
+            national_id="CONS-N1",
+            personal_id="CONS-P1",
+            room_number="1",
+            column_number="1",
+            shelf_number="1",
+            created_by=self.data_entry,
+        )
+        self.other_dossier = Dossier.objects.create(
+            file_number="CONS-OTHER",
+            full_name="Consistency Other",
+            national_id="CONS-N2",
+            personal_id="CONS-P2",
+            room_number="2",
+            column_number="2",
+            shelf_number="2",
+            created_by=self.other_data_entry,
+        )
+        self.admin_dossier = Dossier.objects.create(
+            file_number="CONS-ADMIN",
+            full_name="Consistency Admin",
+            national_id="CONS-N3",
+            personal_id="CONS-P3",
+            room_number="3",
+            column_number="3",
+            shelf_number="3",
+            created_by=self.admin,
+        )
+
+        self.assigned_approved = self.create_document_with_file(
+            name="assigned-approved",
+            created_by=self.data_entry,
+            dossier=self.entry_dossier,
+            status_value=DocumentStatus.APPROVED,
+            reviewed_by=self.auditor,
+        )
+        self.assigned_pending = self.create_document_with_file(
+            name="assigned-pending",
+            created_by=self.data_entry,
+            dossier=self.entry_dossier,
+            status_value=DocumentStatus.PENDING,
+        )
+        self.assigned_rejected = self.create_document_with_file(
+            name="assigned-rejected",
+            created_by=self.data_entry,
+            dossier=self.entry_dossier,
+            status_value=DocumentStatus.REJECTED,
+            reviewed_by=self.auditor,
+            rejection_reason="Needs correction",
+        )
+        self.assigned_draft = self.create_document_with_file(
+            name="assigned-draft",
+            created_by=self.data_entry,
+            dossier=self.entry_dossier,
+            status_value=DocumentStatus.DRAFT,
+        )
+        self.other_approved = self.create_document_with_file(
+            name="other-approved",
+            created_by=self.other_data_entry,
+            dossier=self.other_dossier,
+            status_value=DocumentStatus.APPROVED,
+            reviewed_by=self.other_auditor,
+        )
+        self.other_pending = self.create_document_with_file(
+            name="other-pending",
+            created_by=self.other_data_entry,
+            dossier=self.other_dossier,
+            status_value=DocumentStatus.PENDING,
+        )
+        self.admin_pending = self.create_document_with_file(
+            name="admin-pending",
+            created_by=self.admin,
+            dossier=self.admin_dossier,
+            status_value=DocumentStatus.PENDING,
+        )
+        self.documents = [
+            self.assigned_approved,
+            self.assigned_pending,
+            self.assigned_rejected,
+            self.assigned_draft,
+            self.other_approved,
+            self.other_pending,
+            self.admin_pending,
+        ]
+
+    def create_document_with_file(
+        self,
+        *,
+        name,
+        created_by,
+        dossier,
+        status_value,
+        reviewed_by=None,
+        rejection_reason=None,
+    ):
+        relative_path = f"uploads/dossier_{dossier.id}/{name}.pdf"
+        self.write_stored_pdf(relative_path)
+        return Document.objects.create(
+            dossier=dossier,
+            doc_type=self.doc_type,
+            doc_number=f"DOC-{name.upper()}",
+            doc_name=f"Document {name}",
+            file_path=relative_path,
+            file_size_kb=120,
+            mime_type="application/pdf",
+            status=status_value,
+            created_by=created_by,
+            reviewed_by=reviewed_by,
+            reviewed_at=timezone.now() if reviewed_by is not None else None,
+            rejection_reason=rejection_reason,
+        )
+
+    def assert_role_visibility_alignment(self, *, user, expected_visible_ids):
+        self.client.force_authenticate(user=user)
+
+        list_response = self.client.get("/api/documents/?ordering=id")
+        self.assertEqual(list_response.status_code, status.HTTP_200_OK)
+        self.assertEqual({item["id"] for item in list_response.data["results"]}, expected_visible_ids)
+
+        for document in self.documents:
+            expected_status_code = status.HTTP_200_OK if document.id in expected_visible_ids else status.HTTP_404_NOT_FOUND
+
+            detail_response = self.client.get(f"/api/documents/{document.id}/")
+            self.assertEqual(detail_response.status_code, expected_status_code)
+            if expected_status_code == status.HTTP_200_OK:
+                self.assertEqual(detail_response.data["id"], document.id)
+
+            file_response = self.client.get(f"/api/documents/{document.id}/file/")
+            self.assertEqual(file_response.status_code, expected_status_code)
+
+    def test_admin_list_detail_and_file_visibility_stay_aligned(self):
+        self.assert_role_visibility_alignment(
+            user=self.admin,
+            expected_visible_ids={document.id for document in self.documents},
+        )
+
+    def test_data_entry_list_detail_and_file_visibility_stay_aligned(self):
+        self.assert_role_visibility_alignment(
+            user=self.data_entry,
+            expected_visible_ids={
+                self.assigned_approved.id,
+                self.assigned_pending.id,
+                self.assigned_rejected.id,
+                self.assigned_draft.id,
+            },
+        )
+
+    def test_auditor_list_detail_and_file_visibility_stay_aligned(self):
+        self.assert_role_visibility_alignment(
+            user=self.auditor,
+            expected_visible_ids={
+                self.assigned_approved.id,
+                self.assigned_pending.id,
+                self.assigned_rejected.id,
+            },
+        )
+
+    def test_reader_list_detail_and_file_visibility_stay_aligned(self):
+        self.assert_role_visibility_alignment(
+            user=self.reader,
+            expected_visible_ids={
+                self.assigned_approved.id,
+                self.other_approved.id,
+            },
+        )
+
+    def test_scoped_search_and_filters_cannot_escape_visibility(self):
+        self.client.force_authenticate(user=self.auditor)
+        auditor_search = self.client.get("/api/documents/?search=approved")
+        self.assertEqual(auditor_search.status_code, status.HTTP_200_OK)
+        self.assertEqual({item["id"] for item in auditor_search.data["results"]}, {self.assigned_approved.id})
+
+        auditor_hidden_reviewer = self.client.get(f"/api/documents/?reviewed_by={self.other_auditor.username}")
+        self.assertEqual(auditor_hidden_reviewer.status_code, status.HTTP_200_OK)
+        self.assertEqual(auditor_hidden_reviewer.data["count"], 0)
+
+        self.client.force_authenticate(user=self.reader)
+        reader_pending_search = self.client.get("/api/documents/?search=pending")
+        self.assertEqual(reader_pending_search.status_code, status.HTTP_200_OK)
+        self.assertEqual(reader_pending_search.data["count"], 0)
+
+        reader_visible_dossier_filter = self.client.get(f"/api/documents/?status=approved&dossier={self.other_dossier.file_number}")
+        self.assertEqual(reader_visible_dossier_filter.status_code, status.HTTP_200_OK)
+        self.assertEqual(
+            {item["id"] for item in reader_visible_dossier_filter.data["results"]},
+            {self.other_approved.id},
+        )
 
 
 class UserAssignedAuditorLinkageTests(APITestCase):
@@ -3692,6 +4415,25 @@ class AdminUserManagementApiTests(APITestCase):
         self.data_entry.refresh_from_db()
         self.assertIsNone(self.data_entry.assigned_auditor)
 
+    def test_role_change_creates_security_audit_log(self):
+        self.data_entry.assigned_auditor = self.auditor
+        self.data_entry.save()
+
+        payload = self._build_user_update_payload(self.data_entry, role=UserRole.AUDITOR)
+        response = self.client.put(f"/api/users/{self.data_entry.id}/", payload, format="json")
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        audit_log = AuditLog.objects.filter(
+            action=AuditAction.UPDATE,
+            entity_type="user",
+            entity_id=self.data_entry.id,
+            new_values__role=UserRole.AUDITOR,
+        ).latest("id")
+        self.assertEqual(audit_log.user_id, self.admin.id)
+        self.assertEqual(audit_log.old_values["role"], UserRole.DATA_ENTRY)
+        self.assertEqual(audit_log.new_values["role"], UserRole.AUDITOR)
+        self.assertEqual(audit_log.new_values["message"], "Changed role from data_entry to auditor.")
+
     def test_changing_data_entry_with_draft_document_fails(self):
         self.data_entry.assigned_auditor = self.auditor
         self.data_entry.save()
@@ -3800,6 +4542,36 @@ class AdminUserManagementApiTests(APITestCase):
         self.assertEqual(response.data["assigned_auditor_username"], self.auditor2.username)
         self.data_entry.refresh_from_db()
         self.assertEqual(self.data_entry.assigned_auditor_id, self.auditor2.id)
+
+    def test_reviewer_reassignment_creates_security_audit_log(self):
+        self.data_entry.assigned_auditor = self.auditor
+        self.data_entry.save()
+
+        payload = {
+            "username": self.data_entry.username,
+            "first_name": self.data_entry.first_name,
+            "last_name": self.data_entry.last_name,
+            "email": self.data_entry.email,
+            "role": UserRole.DATA_ENTRY,
+            "is_active": True,
+            "assigned_auditor_id": self.auditor2.id,
+        }
+        response = self.client.put(f"/api/users/{self.data_entry.id}/", payload, format="json")
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        audit_log = AuditLog.objects.filter(
+            action=AuditAction.UPDATE,
+            entity_type="user",
+            entity_id=self.data_entry.id,
+            new_values__assigned_auditor_by=self.auditor2.id,
+        ).latest("id")
+        self.assertEqual(audit_log.user_id, self.admin.id)
+        self.assertEqual(audit_log.old_values["assigned_auditor_by"], self.auditor.id)
+        self.assertEqual(audit_log.new_values["assigned_auditor_by"], self.auditor2.id)
+        self.assertEqual(
+            audit_log.new_values["message"],
+            f"Reassigned reviewer from {self.auditor.username} to {self.auditor2.username}.",
+        )
 
     def test_admin_cannot_remove_assigned_auditor_from_data_entry(self):
         self.data_entry.assigned_auditor = self.auditor
@@ -4193,7 +4965,87 @@ class AdminApprovalIndicatorTests(APITestCase):
         self.assertEqual(response.data["reviewed_by_role"], UserRole.AUDITOR)
         self.assertEqual(response.data["reviewed_by_name"], self.auditor.username)
         self.assertFalse(response.data["is_approved_by_admin"])
-        self.assertEqual(response.data["status_display_label"], "معتمدة")
+
+    def test_document_detail_api_flags_can_add_another_document_for_admin(self):
+        doc = Document.objects.create(
+            dossier=self.dossier,
+            doc_type=self.doc_type,
+            doc_number="AP-ADD-ADMIN",
+            doc_name="Admin Add Flow",
+            file_path="archive/test-add-admin.pdf",
+            file_size_kb=100,
+            status=DocumentStatus.DRAFT,
+            created_by=self.data_entry,
+        )
+
+        self.client.force_authenticate(user=self.admin)
+        response = self.client.get(f"/api/documents/{doc.id}/")
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertTrue(response.data["can_add_another_document"])
+
+    def test_document_detail_api_flags_can_add_another_document_for_dossier_owner(self):
+        doc = Document.objects.create(
+            dossier=self.dossier,
+            doc_type=self.doc_type,
+            doc_number="AP-ADD-OWNER",
+            doc_name="Owner Add Flow",
+            file_path="archive/test-add-owner.pdf",
+            file_size_kb=100,
+            status=DocumentStatus.DRAFT,
+            created_by=self.data_entry,
+        )
+
+        self.client.force_authenticate(user=self.data_entry)
+        response = self.client.get(f"/api/documents/{doc.id}/")
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertTrue(response.data["can_add_another_document"])
+
+    def test_document_detail_api_hides_add_another_document_for_archived_dossier(self):
+        archived_dossier = Dossier.objects.create(
+            file_number="AP-ARCH-001",
+            full_name="Archived Dossier",
+            national_id="12345678902",
+            personal_id="PID002",
+            room_number="102",
+            column_number="B",
+            shelf_number="2",
+            created_by=self.data_entry,
+            is_archived=True,
+        )
+        doc = Document.objects.create(
+            dossier=archived_dossier,
+            doc_type=self.doc_type,
+            doc_number="AP-ADD-ARCH",
+            doc_name="Archived Add Flow",
+            file_path="archive/test-add-archived.pdf",
+            file_size_kb=100,
+            status=DocumentStatus.DRAFT,
+            created_by=self.data_entry,
+        )
+
+        self.client.force_authenticate(user=self.admin)
+        response = self.client.get(f"/api/documents/{doc.id}/")
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertFalse(response.data["can_add_another_document"])
+
+    def test_document_detail_api_hides_add_another_document_for_auditor(self):
+        self.data_entry.assigned_auditor = self.auditor
+        self.data_entry.save()
+        doc = Document.objects.create(
+            dossier=self.dossier,
+            doc_type=self.doc_type,
+            doc_number="AP-ADD-AUD",
+            doc_name="Auditor No Add Flow",
+            file_path="archive/test-add-auditor.pdf",
+            file_size_kb=100,
+            status=DocumentStatus.PENDING,
+            created_by=self.data_entry,
+        )
+
+        self.client.force_authenticate(user=self.auditor)
+        response = self.client.get(f"/api/documents/{doc.id}/")
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertFalse(response.data["can_add_another_document"])
 
     def test_api_includes_indicator_for_reader(self):
         """API response includes is_approved_by_admin field when reader views documents."""
@@ -4622,3 +5474,191 @@ class DocumentDetailScopeApiTests(APITestCase):
         self.client.force_authenticate(user=self.auditor)
         response = self.client.get(f"/api/documents/{self.outside_doc.id}/")
         self.assertEqual(response.status_code, status.HTTP_404_NOT_FOUND)
+
+
+class ReviewAssignmentConsistencyApiTests(APITestCase):
+    def setUp(self):
+        self.admin = User.objects.create_user(username="rac_admin", password="pass12345", role=UserRole.ADMIN)
+        self.assigned_auditor = User.objects.create_user(
+            username="rac_auditor_assigned",
+            password="pass12345",
+            role=UserRole.AUDITOR,
+        )
+        self.new_auditor = User.objects.create_user(
+            username="rac_auditor_new",
+            password="pass12345",
+            role=UserRole.AUDITOR,
+        )
+        self.other_auditor = User.objects.create_user(
+            username="rac_auditor_other",
+            password="pass12345",
+            role=UserRole.AUDITOR,
+        )
+        self.data_entry = User.objects.create_user(username="rac_entry", password="pass12345", role=UserRole.DATA_ENTRY)
+
+        self.data_entry.assigned_auditor = self.assigned_auditor
+        self.data_entry.save()
+
+        self.doc_type = DocumentType.objects.create(
+            name="Review Assignment Doc",
+            slug="review-assignment-doc",
+            group_name="review",
+            display_order=1,
+            is_active=True,
+        )
+        self.dossier = Dossier.objects.create(
+            file_number="RAC-001",
+            full_name="Review Assignment User",
+            national_id="RAC-N1",
+            personal_id="RAC-P1",
+            room_number="1",
+            column_number="1",
+            shelf_number="1",
+            created_by=self.data_entry,
+        )
+
+        self.approval_doc = Document.objects.create(
+            dossier=self.dossier,
+            doc_type=self.doc_type,
+            doc_number="RAC-APPROVE",
+            doc_name="Review Approval Doc",
+            file_path="archive/rac-approve.pdf",
+            file_size_kb=100,
+            status=DocumentStatus.PENDING,
+            created_by=self.data_entry,
+        )
+        self.rejection_doc = Document.objects.create(
+            dossier=self.dossier,
+            doc_type=self.doc_type,
+            doc_number="RAC-REJECT",
+            doc_name="Review Rejection Doc",
+            file_path="archive/rac-reject.pdf",
+            file_size_kb=100,
+            status=DocumentStatus.PENDING,
+            created_by=self.data_entry,
+        )
+
+    def test_assigned_auditor_queue_detail_and_approve_are_consistent(self):
+        self.client.force_authenticate(user=self.assigned_auditor)
+
+        queue_response = self.client.get("/api/auditor/review-queue/")
+        self.assertEqual(queue_response.status_code, status.HTTP_200_OK)
+        self.assertEqual(
+            {item["id"] for item in queue_response.data["results"]},
+            {self.approval_doc.id, self.rejection_doc.id},
+        )
+
+        detail_response = self.client.get(f"/api/documents/{self.approval_doc.id}/")
+        self.assertEqual(detail_response.status_code, status.HTTP_200_OK)
+        self.assertEqual(detail_response.data["id"], self.approval_doc.id)
+
+        approve_response = self.client.post(f"/api/documents/{self.approval_doc.id}/approve/", {}, format="json")
+        self.assertEqual(approve_response.status_code, status.HTTP_200_OK)
+        self.approval_doc.refresh_from_db()
+        self.assertEqual(self.approval_doc.status, DocumentStatus.APPROVED)
+        self.assertEqual(self.approval_doc.reviewed_by_id, self.assigned_auditor.id)
+
+    def test_assigned_auditor_queue_detail_and_reject_are_consistent(self):
+        self.client.force_authenticate(user=self.assigned_auditor)
+
+        queue_response = self.client.get("/api/auditor/review-queue/")
+        self.assertEqual(queue_response.status_code, status.HTTP_200_OK)
+        self.assertEqual(
+            {item["id"] for item in queue_response.data["results"]},
+            {self.approval_doc.id, self.rejection_doc.id},
+        )
+
+        detail_response = self.client.get(f"/api/documents/{self.rejection_doc.id}/")
+        self.assertEqual(detail_response.status_code, status.HTTP_200_OK)
+        self.assertEqual(detail_response.data["id"], self.rejection_doc.id)
+
+        reject_response = self.client.post(
+            f"/api/documents/{self.rejection_doc.id}/reject/",
+            {"rejection_reason": "Assigned auditor rejection"},
+            format="json",
+        )
+        self.assertEqual(reject_response.status_code, status.HTTP_200_OK)
+        self.rejection_doc.refresh_from_db()
+        self.assertEqual(self.rejection_doc.status, DocumentStatus.REJECTED)
+        self.assertEqual(self.rejection_doc.reviewed_by_id, self.assigned_auditor.id)
+        self.assertEqual(self.rejection_doc.rejection_reason, "Assigned auditor rejection")
+
+    def test_non_assigned_auditor_cannot_review_even_with_known_ids(self):
+        self.client.force_authenticate(user=self.other_auditor)
+
+        queue_response = self.client.get("/api/auditor/review-queue/")
+        self.assertEqual(queue_response.status_code, status.HTTP_200_OK)
+        self.assertEqual(queue_response.data["count"], 0)
+
+        detail_response = self.client.get(f"/api/documents/{self.approval_doc.id}/")
+        self.assertEqual(detail_response.status_code, status.HTTP_404_NOT_FOUND)
+
+        approve_response = self.client.post(f"/api/documents/{self.approval_doc.id}/approve/", {}, format="json")
+        self.assertEqual(approve_response.status_code, status.HTTP_404_NOT_FOUND)
+
+        reject_response = self.client.post(
+            f"/api/documents/{self.rejection_doc.id}/reject/",
+            {"rejection_reason": "Out of scope"},
+            format="json",
+        )
+        self.assertEqual(reject_response.status_code, status.HTTP_404_NOT_FOUND)
+
+    def test_reassignment_removes_old_auditor_access_and_grants_new_auditor_access(self):
+        self.data_entry.assigned_auditor = self.new_auditor
+        self.data_entry.save()
+
+        self.client.force_authenticate(user=self.assigned_auditor)
+        old_queue_response = self.client.get("/api/auditor/review-queue/")
+        self.assertEqual(old_queue_response.status_code, status.HTTP_200_OK)
+        self.assertEqual(old_queue_response.data["count"], 0)
+
+        old_detail_response = self.client.get(f"/api/documents/{self.approval_doc.id}/")
+        self.assertEqual(old_detail_response.status_code, status.HTTP_404_NOT_FOUND)
+
+        old_approve_response = self.client.post(f"/api/documents/{self.approval_doc.id}/approve/", {}, format="json")
+        self.assertEqual(old_approve_response.status_code, status.HTTP_404_NOT_FOUND)
+
+        self.client.force_authenticate(user=self.new_auditor)
+        new_queue_response = self.client.get("/api/auditor/review-queue/")
+        self.assertEqual(new_queue_response.status_code, status.HTTP_200_OK)
+        self.assertEqual(
+            {item["id"] for item in new_queue_response.data["results"]},
+            {self.approval_doc.id, self.rejection_doc.id},
+        )
+
+        new_detail_response = self.client.get(f"/api/documents/{self.approval_doc.id}/")
+        self.assertEqual(new_detail_response.status_code, status.HTTP_200_OK)
+        self.assertEqual(new_detail_response.data["id"], self.approval_doc.id)
+
+        new_approve_response = self.client.post(f"/api/documents/{self.approval_doc.id}/approve/", {}, format="json")
+        self.assertEqual(new_approve_response.status_code, status.HTTP_200_OK)
+        self.approval_doc.refresh_from_db()
+        self.assertEqual(self.approval_doc.status, DocumentStatus.APPROVED)
+        self.assertEqual(self.approval_doc.reviewed_by_id, self.new_auditor.id)
+
+    def test_admin_review_queue_detail_and_actions_remain_broader(self):
+        self.data_entry.assigned_auditor = self.new_auditor
+        self.data_entry.save()
+
+        self.client.force_authenticate(user=self.admin)
+
+        queue_response = self.client.get("/api/auditor/review-queue/")
+        self.assertEqual(queue_response.status_code, status.HTTP_200_OK)
+        self.assertEqual(
+            {item["id"] for item in queue_response.data["results"]},
+            {self.approval_doc.id, self.rejection_doc.id},
+        )
+
+        detail_response = self.client.get(f"/api/documents/{self.rejection_doc.id}/")
+        self.assertEqual(detail_response.status_code, status.HTTP_200_OK)
+        self.assertEqual(detail_response.data["id"], self.rejection_doc.id)
+
+        reject_response = self.client.post(
+            f"/api/documents/{self.rejection_doc.id}/reject/",
+            {"rejection_reason": "Admin review"},
+            format="json",
+        )
+        self.assertEqual(reject_response.status_code, status.HTTP_200_OK)
+        self.rejection_doc.refresh_from_db()
+        self.assertEqual(self.rejection_doc.status, DocumentStatus.REJECTED)
+        self.assertEqual(self.rejection_doc.reviewed_by_id, self.admin.id)

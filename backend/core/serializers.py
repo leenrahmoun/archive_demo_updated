@@ -9,7 +9,7 @@ from rest_framework import serializers
 from rest_framework_simplejwt.tokens import RefreshToken, TokenError
 from django.utils.text import slugify
 
-from core.access import get_dossier_documents_for_user
+from core.access import get_document_edit_denial_reason, get_dossier_documents_for_user
 from core.dossier_validation import normalize_text_value, validate_dossier_identity_data
 from core.models import AuditAction, AuditLog, Document, DocumentStatus, DocumentType, Dossier, Governorate, UserRole
 from core.services.audit_log_service import create_audit_log
@@ -141,11 +141,56 @@ class UserManagementSerializer(serializers.ModelSerializer):
         return user
 
     def update(self, instance, validated_data):
+        actor = self.context["request"].user
+        old_role = instance.role
+        old_assigned_auditor_id = instance.assigned_auditor_id
+        old_assigned_auditor_username = instance.assigned_auditor.username if instance.assigned_auditor else None
         password = validated_data.pop("password", None)
         user = super().update(instance, validated_data)
         if password:
             user.set_password(password)
             user.save()
+
+        if old_role != user.role:
+            create_audit_log(
+                user=actor,
+                action=AuditAction.UPDATE,
+                entity_type="user",
+                entity_id=user.id,
+                old_values={"role": old_role},
+                new_values={
+                    "role": user.role,
+                    "message": f"Changed role from {old_role} to {user.role}.",
+                },
+            )
+
+        if old_assigned_auditor_id != user.assigned_auditor_id:
+            new_assigned_auditor_username = user.assigned_auditor.username if user.assigned_auditor else None
+            if old_assigned_auditor_id is None and user.assigned_auditor_id is not None:
+                message = f"Assigned reviewer {new_assigned_auditor_username}."
+            elif old_assigned_auditor_id is not None and user.assigned_auditor_id is None:
+                message = "Cleared the assigned reviewer."
+            else:
+                message = (
+                    f"Reassigned reviewer from {old_assigned_auditor_username} "
+                    f"to {new_assigned_auditor_username}."
+                )
+
+            create_audit_log(
+                user=actor,
+                action=AuditAction.UPDATE,
+                entity_type="user",
+                entity_id=user.id,
+                old_values={
+                    "assigned_auditor_by": old_assigned_auditor_id,
+                    "assigned_auditor_username": old_assigned_auditor_username,
+                },
+                new_values={
+                    "assigned_auditor_by": user.assigned_auditor_id,
+                    "assigned_auditor_username": new_assigned_auditor_username,
+                    "message": message,
+                },
+            )
         return user
 
 
@@ -270,6 +315,11 @@ AUDIT_ACTION_LABELS = {
     AuditAction.REPLACE_FILE: "استبدال الملف",
     AuditAction.DELETE: "حذف",
     AuditAction.RESTORE: "استعادة",
+    AuditAction.LOGIN: "تسجيل الدخول",
+    AuditAction.LOGIN_FAILED: "فشل تسجيل الدخول",
+    AuditAction.LOGOUT: "تسجيل الخروج",
+    AuditAction.REFRESH_FAILED: "فشل تحديث الجلسة",
+    AuditAction.ACCESS_DENIED: "رفض أمني",
 }
 AUDIT_ENTITY_LABELS = {
     "document": "وثيقة",
@@ -287,6 +337,7 @@ AUDIT_CHANGE_FIELD_LABELS = {
     "rejection_reason": "سبب الرفض",
     "name": "اسم نوع الوثيقة",
     "is_active": "الحالة",
+    "assigned_auditor_username": "المدقق المعيّن",
 }
 
 
@@ -554,6 +605,7 @@ class DocumentSummarySerializer(serializers.ModelSerializer):
     is_approved_by_admin = serializers.SerializerMethodField()
     is_rejected_by_admin = serializers.SerializerMethodField()
     status_display_label = serializers.SerializerMethodField()
+    can_add_another_document = serializers.SerializerMethodField()
     dossier_name = serializers.CharField(source="dossier.file_number", read_only=True)
     doc_type_name = serializers.CharField(source="doc_type.name", read_only=True)
     created_by_name = serializers.CharField(source="created_by.username", read_only=True)
@@ -592,6 +644,7 @@ class DocumentSummarySerializer(serializers.ModelSerializer):
             "deleted_by_name",
             "is_approved_by_admin",
             "is_rejected_by_admin",
+            "can_add_another_document",
         )
 
     def get_is_approved_by_admin(self, obj):
@@ -620,6 +673,19 @@ class DocumentSummarySerializer(serializers.ModelSerializer):
         if self.get_is_rejected_by_admin(obj):
             return "مرفوضة من المدير"
         return DOCUMENT_STATUS_LABELS.get(obj.status, obj.status)
+
+    def get_can_add_another_document(self, obj):
+        request = self.context.get("request")
+        user = getattr(request, "user", None)
+        dossier = getattr(obj, "dossier", None)
+
+        if not user or not getattr(user, "is_authenticated", False) or dossier is None or dossier.is_archived:
+            return False
+
+        if user.role == UserRole.ADMIN:
+            return True
+
+        return user.role == UserRole.DATA_ENTRY and dossier.created_by_id == user.id
 
 
 class AdminDashboardRecentDocumentSerializer(serializers.ModelSerializer):
@@ -796,8 +862,9 @@ class DocumentUpdateSerializer(serializers.ModelSerializer):
         )
 
     def validate(self, attrs):
-        if self.instance.status not in [DocumentStatus.DRAFT, DocumentStatus.REJECTED]:
-            raise serializers.ValidationError({"status": "Document can only be edited when it is in draft or rejected status."})
+        denial_reason = get_document_edit_denial_reason(self.context["request"].user, self.instance)
+        if denial_reason is not None:
+            raise serializers.ValidationError({"status": denial_reason})
         return attrs
 
     def validate_doc_type(self, value):

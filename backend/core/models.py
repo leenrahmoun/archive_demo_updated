@@ -208,6 +208,11 @@ class AuditAction(models.TextChoices):
     REPLACE_FILE = "replace_file", "Replace File"
     DELETE = "delete", "Delete"
     RESTORE = "restore", "Restore"
+    LOGIN = "login", "Login"
+    LOGIN_FAILED = "login_failed", "Login Failed"
+    LOGOUT = "logout", "Logout"
+    REFRESH_FAILED = "refresh_failed", "Refresh Failed"
+    ACCESS_DENIED = "access_denied", "Access Denied"
 
 
 class AuditLog(models.Model):
