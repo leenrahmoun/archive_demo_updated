@@ -22,6 +22,7 @@ from core.access import (
     get_audit_log_visibility_queryset,
     get_deleted_document_visibility_queryset,
     get_deleted_document_detail_queryset_for_user,
+    get_document_visibility_queryset,
     get_document_queryset_for_user,
     get_document_detail_queryset_for_user,
     get_document_restore_scope_queryset_for_user,
